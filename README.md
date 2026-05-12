@@ -11,6 +11,7 @@ A minimalist and smart macOS menu bar application built with pure Swift that mon
 - **Smart Averages:** Calculates your true average charging speed or power consumption from the moment the power state changes.
 - **Time Remaining:** Shows exactly how much time is left until your battery is fully charged or completely empty, in a clean `(1s 20d)` format.
 - **Battery Temperature:** Monitors the `AppleSmartBattery` sensor to show real-time temperature in °C.
+- **Smart Notifications:** Sends elegant macOS system notifications when your battery is fully charged (100%) or drops below 20%.
 - **Launch at Login:** Includes a built-in toggle using native `SMAppService` to automatically start when you turn on your Mac.
 
 ## How It Works
