@@ -12,6 +12,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var temperatureItem: NSMenuItem!
     var topApp1Item: NSMenuItem!
     var topApp2Item: NSMenuItem!
+    var screenOnTimeItem: NSMenuItem!
+    
+    var screenOnTime: TimeInterval {
+        get { UserDefaults.standard.double(forKey: "screenOnTime") }
+        set { UserDefaults.standard.set(newValue, forKey: "screenOnTime") }
+    }
+    var isScreenOn: Bool = true
+    var lastUpdateDate: Date = Date()
     
     var totalWatts: Double = 0.0
     var wattSamplesCount: Int = 0
@@ -33,6 +41,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         temperatureItem = NSMenuItem(title: "Pil Sıcaklığı: -- °C", action: #selector(dummyAction), keyEquivalent: "")
         temperatureItem.target = self
         menu.addItem(temperatureItem)
+        
+        screenOnTimeItem = NSMenuItem(title: "Ekran Süresi: --", action: #selector(dummyAction), keyEquivalent: "")
+        screenOnTimeItem.target = self
+        menu.addItem(screenOnTimeItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -63,6 +75,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         statusItem.menu = menu
         
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(screenDidSleep), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(screenDidWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        lastUpdateDate = Date()
+        
         updateLoginItemState()
         updateBatteryStatus()
         
@@ -77,6 +93,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
+    
+    @objc func screenDidSleep() { isScreenOn = false }
+    @objc func screenDidWake() { 
+        isScreenOn = true
+        lastUpdateDate = Date()
+    }
+    
+    func formatTimeInterval(_ interval: TimeInterval) -> String {
+        let totalSeconds = Int(interval)
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        if hours > 0 {
+            return String(format: "%ds %02dd", hours, minutes)
+        } else {
+            return String(format: "%dd", minutes)
+        }
+    }
+    
     @objc func dummyAction(_ sender: Any?) {}
     
     @objc func closeAllApps() {
@@ -184,6 +218,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc func updateBatteryStatus() {
+        let now = Date()
+        let delta = now.timeIntervalSince(lastUpdateDate)
+        lastUpdateDate = now
+        
         var watts: Double = 0.0
         let service = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"))
         if service != 0 {
@@ -246,6 +284,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         if isCharging != wasCharging {
+            if !isCharging {
+                screenOnTime = 0
+            }
             totalWatts = 0.0
             wattSamplesCount = 0
             wasCharging = isCharging
@@ -270,6 +311,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         avgAttrStr.append(avgValAttrStr)
         averageWattageItem.attributedTitle = avgAttrStr
+        
+        if !isCharging && isScreenOn {
+            if delta > 0 && delta < 10 { // Max 10 sec delta to ignore sleep gaps
+                screenOnTime += delta
+            }
+        }
+        
+        let screenOnPrefix = "Ekran Süresi: "
+        let screenOnValue = formatTimeInterval(screenOnTime)
+        
+        let screenOnAttrStr = NSMutableAttributedString(string: screenOnPrefix, attributes: [
+            .font: menuFont,
+            .foregroundColor: NSColor.textColor
+        ])
+        let screenOnValAttrStr = NSAttributedString(string: screenOnValue, attributes: [
+            .font: menuFont,
+            .foregroundColor: NSColor.systemGreen
+        ])
+        screenOnAttrStr.append(screenOnValAttrStr)
+        screenOnTimeItem.attributedTitle = screenOnAttrStr
         
         let wattString = String(format: "%.1fW", watts)
         var timeString = ""
