@@ -114,6 +114,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         for source in sources {
             if let info = IOPSGetPowerSourceDescription(snapshot, source).takeUnretainedValue() as? [String: Any] {
+                let type = info[kIOPSTypeKey] as? String ?? ""
+                if type != kIOPSInternalBatteryType { continue }
+                
                 let state = info[kIOPSPowerSourceStateKey] as? String ?? ""
                 isCharging = (state == kIOPSACPowerValue)
                 isFullyCharged = (info[kIOPSIsChargedKey] as? Bool) ?? false
@@ -161,7 +164,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 timeString = " (\(minutes)d)"
             }
-        } else if isCharging && timeRemaining == 0 {
+        } else {
             timeString = " (Hesaplanıyor...)"
         }
         
