@@ -10,6 +10,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var loginItem: NSMenuItem!
     var averageWattageItem: NSMenuItem!
     var temperatureItem: NSMenuItem!
+    var topApp1Item: NSMenuItem!
+    var topApp2Item: NSMenuItem!
     
     var totalWatts: Double = 0.0
     var wattSamplesCount: Int = 0
@@ -31,6 +33,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         temperatureItem = NSMenuItem(title: "Pil Sıcaklığı: -- °C", action: nil, keyEquivalent: "")
         temperatureItem.isEnabled = false
         menu.addItem(temperatureItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        topApp1Item = NSMenuItem(title: "1. -- (0.0 W)", action: nil, keyEquivalent: "")
+        topApp1Item.isEnabled = false
+        menu.addItem(topApp1Item)
+        
+        topApp2Item = NSMenuItem(title: "2. -- (0.0 W)", action: nil, keyEquivalent: "")
+        topApp2Item.isEnabled = false
+        menu.addItem(topApp2Item)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        let closeAllAppsItem = NSMenuItem(title: "Tüm Uygulamaları Kapat", action: #selector(closeAllApps), keyEquivalent: "")
+        menu.addItem(closeAllAppsItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -56,6 +73,77 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
     
+    @objc func closeAllApps() {
+        let apps = NSWorkspace.shared.runningApplications
+        let currentApp = NSRunningApplication.current
+        for app in apps {
+            if app.activationPolicy == .regular && app != currentApp && app.bundleIdentifier != "com.apple.Finder" {
+                app.terminate()
+            }
+        }
+    }
+    
+    func updateTopAppsBackground(totalWatts: Double) {
+        DispatchQueue.global(qos: .background).async {
+            let task = Process()
+            task.launchPath = "/bin/ps"
+            task.arguments = ["-eo", "pcpu,comm", "-r"]
+            
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            
+            do {
+                try task.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: data, encoding: .utf8) {
+                    let lines = output.components(separatedBy: .newlines).dropFirst()
+                    var appCPUs: [(name: String, cpu: Double)] = []
+                    var totalCPU: Double = 0.0
+                    
+                    for line in lines {
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        if trimmed.isEmpty { continue }
+                        
+                        let parts = trimmed.split(separator: " ", maxSplits: 1)
+                        if parts.count == 2, let cpu = Double(parts[0]) {
+                            totalCPU += cpu
+                            let comm = String(parts[1])
+                            
+                            if comm.hasPrefix("/System/") || comm.hasPrefix("/sbin/") || comm.hasPrefix("/usr/") || comm.contains("kernel_task") || comm.contains("WindowServer") || comm.contains("WattWhat") || comm.contains("launchd") {
+                                continue
+                            }
+                            
+                            let name = (comm as NSString).lastPathComponent
+                            appCPUs.append((name: name, cpu: cpu))
+                        }
+                    }
+                    
+                    let sorted = appCPUs.sorted { $0.cpu > $1.cpu }
+                    let top2 = Array(sorted.prefix(2))
+                    let baseCPU = max(totalCPU, 1.0)
+                    
+                    DispatchQueue.main.async {
+                        if top2.count > 0 {
+                            let w1 = (top2[0].cpu / baseCPU) * totalWatts
+                            self.topApp1Item.title = String(format: "1. %@ (%.1f W)", top2[0].name, w1)
+                        } else {
+                            self.topApp1Item.title = "1. -- (0.0 W)"
+                        }
+                        
+                        if top2.count > 1 {
+                            let w2 = (top2[1].cpu / baseCPU) * totalWatts
+                            self.topApp2Item.title = String(format: "2. %@ (%.1f W)", top2[1].name, w2)
+                        } else {
+                            self.topApp2Item.title = "2. -- (0.0 W)"
+                        }
+                    }
+                }
+            } catch {
+                print("Error getting top apps")
+            }
+        }
+    }
+
     @objc func quitApp() {
         NSApplication.shared.terminate(self)
     }
@@ -103,6 +191,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             IOObjectRelease(service)
         }
+        
+        updateTopAppsBackground(totalWatts: watts)
         
         var isCharging = false
         var timeRemaining: Int = 0
