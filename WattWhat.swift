@@ -26,12 +26,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         let menu = NSMenu()
-        averageWattageItem = NSMenuItem(title: "Ortalama: -- W", action: #selector(dummyAction), keyEquivalent: "")
-        averageWattageItem.target = self
+        averageWattageItem = NSMenuItem(title: "Ortalama: -- W", action: nil, keyEquivalent: "")
+        averageWattageItem.isEnabled = false
         menu.addItem(averageWattageItem)
         
-        temperatureItem = NSMenuItem(title: "Pil Sıcaklığı: -- °C", action: #selector(dummyAction), keyEquivalent: "")
-        temperatureItem.target = self
+        temperatureItem = NSMenuItem(title: "Pil Sıcaklığı: -- °C", action: nil, keyEquivalent: "")
+        temperatureItem.isEnabled = false
         menu.addItem(temperatureItem)
         
         menu.addItem(NSMenuItem.separator())
@@ -77,9 +77,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
-    
-    @objc func dummyAction() {}
-    
     @objc func closeAllApps() {
         let apps = NSWorkspace.shared.runningApplications
         let currentApp = NSRunningApplication.current
@@ -201,7 +198,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 
                 let attrStr = NSMutableAttributedString(string: tempPrefix, attributes: [
                     .font: menuFont,
-                    .foregroundColor: NSColor.white
+                    .foregroundColor: NSColor(calibratedWhite: 0.999, alpha: 1.0)
                 ])
                 let valAttrStr = NSAttributedString(string: tempValue, attributes: [
                     .font: menuFont,
@@ -263,7 +260,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let avgAttrStr = NSMutableAttributedString(string: avgPrefix, attributes: [
             .font: menuFont,
-            .foregroundColor: NSColor.white
+            .foregroundColor: NSColor(calibratedWhite: 0.999, alpha: 1.0)
         ])
         let avgValAttrStr = NSAttributedString(string: avgValue, attributes: [
             .font: menuFont,
