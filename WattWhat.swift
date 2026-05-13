@@ -77,7 +77,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
-    @objc func dummyAction() {}
+    @objc func dummyAction(_ sender: Any?) {}
     
     @objc func closeAllApps() {
         let apps = NSWorkspace.shared.runningApplications
@@ -200,7 +200,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 
                 let attrStr = NSMutableAttributedString(string: tempPrefix, attributes: [
                     .font: menuFont,
-                    .foregroundColor: NSColor.white
+                    .foregroundColor: NSColor.textColor
                 ])
                 let valAttrStr = NSAttributedString(string: tempValue, attributes: [
                     .font: menuFont,
@@ -262,7 +262,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let avgAttrStr = NSMutableAttributedString(string: avgPrefix, attributes: [
             .font: menuFont,
-            .foregroundColor: NSColor.white
+            .foregroundColor: NSColor.textColor
         ])
         let avgValAttrStr = NSAttributedString(string: avgValue, attributes: [
             .font: menuFont,
