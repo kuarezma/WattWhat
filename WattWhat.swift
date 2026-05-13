@@ -196,13 +196,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let tempValue = String(format: "%.1f °C", celsius)
                 
                 let menuFont = NSFont.menuFont(ofSize: 0)
-                let boldFont = NSFont.boldSystemFont(ofSize: menuFont.pointSize)
                 
                 let attrStr = NSMutableAttributedString(string: tempPrefix, attributes: [
-                    .font: boldFont
+                    .font: menuFont,
+                    .foregroundColor: NSColor.white
                 ])
                 let valAttrStr = NSAttributedString(string: tempValue, attributes: [
-                    .font: boldFont,
+                    .font: menuFont,
                     .foregroundColor: NSColor.systemOrange
                 ])
                 attrStr.append(valAttrStr)
@@ -258,13 +258,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let avgValue = String(format: "%.1f W", avg)
         
         let menuFont = NSFont.menuFont(ofSize: 0)
-        let boldFont = NSFont.boldSystemFont(ofSize: menuFont.pointSize)
         
         let avgAttrStr = NSMutableAttributedString(string: avgPrefix, attributes: [
-            .font: boldFont
+            .font: menuFont,
+            .foregroundColor: NSColor.white
         ])
         let avgValAttrStr = NSAttributedString(string: avgValue, attributes: [
-            .font: boldFont,
+            .font: menuFont,
             .foregroundColor: NSColor.systemCyan
         ])
         avgAttrStr.append(avgValAttrStr)
