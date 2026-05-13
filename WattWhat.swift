@@ -26,12 +26,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         let menu = NSMenu()
-        averageWattageItem = NSMenuItem(title: "Ortalama: -- W", action: nil, keyEquivalent: "")
-        averageWattageItem.isEnabled = false // So it looks like a non-clickable info item
+        averageWattageItem = NSMenuItem(title: "Ortalama: -- W", action: #selector(dummyAction), keyEquivalent: "")
+        averageWattageItem.target = self
         menu.addItem(averageWattageItem)
         
-        temperatureItem = NSMenuItem(title: "Pil Sıcaklığı: -- °C", action: nil, keyEquivalent: "")
-        temperatureItem.isEnabled = false
+        temperatureItem = NSMenuItem(title: "Pil Sıcaklığı: -- °C", action: #selector(dummyAction), keyEquivalent: "")
+        temperatureItem.target = self
         menu.addItem(temperatureItem)
         
         menu.addItem(NSMenuItem.separator())
@@ -77,6 +77,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
+    
+    @objc func dummyAction() {}
     
     @objc func closeAllApps() {
         let apps = NSWorkspace.shared.runningApplications
