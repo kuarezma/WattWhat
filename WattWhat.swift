@@ -47,6 +47,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         
         let closeAllAppsItem = NSMenuItem(title: "Tüm Uygulamaları Kapat", action: #selector(closeAllApps), keyEquivalent: "")
+        let closeAttributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.systemRed,
+            .font: NSFont.menuFont(ofSize: 0)
+        ]
+        closeAllAppsItem.attributedTitle = NSAttributedString(string: "Tüm Uygulamaları Kapat", attributes: closeAttributes)
         menu.addItem(closeAllAppsItem)
         
         menu.addItem(NSMenuItem.separator())
