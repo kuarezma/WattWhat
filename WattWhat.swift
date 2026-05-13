@@ -192,7 +192,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let tempRef = IORegistryEntryCreateCFProperty(service, "Temperature" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
                 let celsius = Double(tempRef) / 100.0
-                temperatureItem.title = String(format: "Pil Sıcaklığı: %.1f °C", celsius)
+                let tempPrefix = "Pil Sıcaklığı: "
+                let tempValue = String(format: "%.1f °C", celsius)
+                
+                let menuFont = NSFont.menuFont(ofSize: 0)
+                let boldFont = NSFont.boldSystemFont(ofSize: menuFont.pointSize)
+                
+                let attrStr = NSMutableAttributedString(string: tempPrefix, attributes: [
+                    .font: boldFont
+                ])
+                let valAttrStr = NSAttributedString(string: tempValue, attributes: [
+                    .font: boldFont,
+                    .foregroundColor: NSColor.systemOrange
+                ])
+                attrStr.append(valAttrStr)
+                temperatureItem.attributedTitle = attrStr
             }
             IOObjectRelease(service)
         }
@@ -240,11 +254,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wattSamplesCount += 1
         let avg = totalWatts / Double(wattSamplesCount)
         
-        if isCharging {
-            averageWattageItem.title = String(format: "Ortalama Şarj: %.1f W", avg)
-        } else {
-            averageWattageItem.title = String(format: "Ortalama Tüketim: %.1f W", avg)
-        }
+        let avgPrefix = isCharging ? "Ortalama Şarj: " : "Ortalama Tüketim: "
+        let avgValue = String(format: "%.1f W", avg)
+        
+        let menuFont = NSFont.menuFont(ofSize: 0)
+        let boldFont = NSFont.boldSystemFont(ofSize: menuFont.pointSize)
+        
+        let avgAttrStr = NSMutableAttributedString(string: avgPrefix, attributes: [
+            .font: boldFont
+        ])
+        let avgValAttrStr = NSAttributedString(string: avgValue, attributes: [
+            .font: boldFont,
+            .foregroundColor: NSColor.systemCyan
+        ])
+        avgAttrStr.append(avgValAttrStr)
+        averageWattageItem.attributedTitle = avgAttrStr
         
         let wattString = String(format: "%.1fW", watts)
         var timeString = ""
