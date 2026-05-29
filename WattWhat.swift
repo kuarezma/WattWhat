@@ -5,9 +5,10 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    let appVersion = "1.5.2"
+    let appVersion = "1.5.3"
     var statusItem: NSStatusItem!
     var timer: Timer?
+    var updateTimer: Timer?
     var loginItem: NSMenuItem!
     var averageWattageItem: NSMenuItem!
     var temperatureItem: NSMenuItem!
@@ -139,6 +140,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         checkForUpdates()
         
+        updateTimer = Timer.scheduledTimer(timeInterval: 43200.0, target: self, selector: #selector(checkForUpdates), userInfo: nil, repeats: true)
+        
         timer = Timer.scheduledTimer(timeInterval: 3.0, target: self, selector: #selector(updateBatteryStatus), userInfo: nil, repeats: true)
     }
     
@@ -163,7 +166,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
     
-    func checkForUpdates() {
+    @objc func checkForUpdates() {
         guard let url = URL(string: "https://api.github.com/repos/kuarezma/WattWhat/releases/latest") else { return }
         let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
             guard let data = data, error == nil else { return }
