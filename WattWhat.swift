@@ -429,7 +429,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let health = (Double(maxCapacityFromSmart) / Double(designCapacity)) * 100.0
                 
                 let healthPrefix = "Pil Sağlığı: "
-                let healthValue = String(format: "%%%d (%d Devir)", Int(health), cycleCount)
+                let healthValue = String(format: "%%%d ( %d Devir )", Int(health), cycleCount)
                 
                 let menuFont = NSFont.menuFont(ofSize: 0)
                 
