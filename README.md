@@ -20,6 +20,13 @@ WattWhat directly queries the macOS `IOKit` framework and `AppleSmartBattery` re
 
 ## Installation / Building from Source
 
+### Quick Install via Terminal
+You can quickly install the latest compiled version directly to your Applications folder with this one-line command:
+```bash
+curl -L https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o /tmp/WattWhat.zip && unzip -o /tmp/WattWhat.zip -d /Applications && rm /tmp/WattWhat.zip
+```
+
+### Building from Source
 Since WattWhat is a single Swift file, it is incredibly easy to compile and run.
 
 1. Clone or download this repository.
