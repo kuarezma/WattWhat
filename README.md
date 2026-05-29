@@ -24,7 +24,13 @@ Since WattWhat is a single Swift file, it is incredibly easy to compile and run.
 
 1. Clone or download this repository.
 2. Open your terminal and navigate to the folder.
-3. Run the following command to compile the app directly into your existing App bundle (or create a new one):
+3. Run the automated build script (written in Swift) to compile the app, generate a `.zip` archive, and create an installable `.dmg` file automatically:
+
+```bash
+./build.swift
+```
+
+Alternatively, to compile the app bundle manually:
 
 ```bash
 swiftc WattWhat.swift -o "WattWhat.app/Contents/MacOS/WattWhat"
