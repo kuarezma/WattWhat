@@ -5,6 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    let appVersion = "1.4.0"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var loginItem: NSMenuItem!
@@ -136,6 +137,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateLoginItemState()
         updateBatteryStatus()
         
+        checkForUpdates()
+        
         timer = Timer.scheduledTimer(timeInterval: 3.0, target: self, selector: #selector(updateBatteryStatus), userInfo: nil, repeats: true)
     }
     
@@ -146,6 +149,66 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         content.sound = UNNotificationSound.default
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+    }
+    
+    func isVersionGreater(_ remote: String, _ local: String) -> Bool {
+        let remoteParts = remote.split(separator: ".").compactMap { Int($0) }
+        let localParts = local.split(separator: ".").compactMap { Int($0) }
+        for i in 0..<max(remoteParts.count, localParts.count) {
+            let r = i < remoteParts.count ? remoteParts[i] : 0
+            let l = i < localParts.count ? localParts[i] : 0
+            if r > l { return true }
+            if r < l { return false }
+        }
+        return false
+    }
+    
+    func checkForUpdates() {
+        guard let url = URL(string: "https://api.github.com/repos/kuarezma/WattWhat/releases/latest") else { return }
+        let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            guard let data = data, error == nil else { return }
+            do {
+                if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                   let tagName = json["tag_name"] as? String {
+                    let remoteVersion = tagName.replacingOccurrences(of: "v", with: "")
+                    if let current = self?.appVersion, self?.isVersionGreater(remoteVersion, current) == true {
+                        DispatchQueue.main.async {
+                            self?.showUpdateAlert(newVersion: tagName)
+                        }
+                    }
+                }
+            } catch {
+                print("Failed to parse update info.")
+            }
+        }
+        task.resume()
+    }
+    
+    func showUpdateAlert(newVersion: String) {
+        let alert = NSAlert()
+        alert.messageText = "Yeni Güncelleme Mevcut! 🚀"
+        alert.informativeText = "WattWhat'ın yeni sürümü (\(newVersion)) çıktı. Şimdi güncellemek ister misiniz?\\n\\nGüncelle işlemi arka planda sessizce indirilecek ve uygulama yeniden başlatılacaktır."
+        alert.addButton(withTitle: "Güncelle")
+        alert.addButton(withTitle: "Daha Sonra")
+        alert.alertStyle = .informational
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            performSilentUpdate()
+        }
+    }
+    
+    func performSilentUpdate() {
+        let script = "nohup bash -c 'sleep 2 && curl -sL https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o /tmp/WattWhat.zip && unzip -oq /tmp/WattWhat.zip -d /Applications && rm /tmp/WattWhat.zip && open /Applications/WattWhat.app' > /dev/null 2>&1 &"
+        let task = Process()
+        task.launchPath = "/bin/bash"
+        task.arguments = ["-c", script]
+        do {
+            try task.run()
+        } catch {
+            print("Failed to run update script")
+        }
+        NSApplication.shared.terminate(nil)
     }
     
     @objc func screenDidSleep() { isScreenOn = false }
