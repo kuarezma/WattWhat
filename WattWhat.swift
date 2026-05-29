@@ -15,8 +15,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var topApp2Item: NSMenuItem!
     var topApp3Item: NSMenuItem!
     var screenOnTimeItem: NSMenuItem!
+    var batteryHealthItem: NSMenuItem!
+    
+    var showWattItem: NSMenuItem!
+    var showPercentageItem: NSMenuItem!
+    var showTimeItem: NSMenuItem!
     
     let cpuTempReader = CPUTemperatureReader()
+    
+    var showWattInMenu: Bool {
+        get { UserDefaults.standard.object(forKey: "showWattInMenu") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "showWattInMenu") }
+    }
+    var showPercentageInMenu: Bool {
+        get { UserDefaults.standard.object(forKey: "showPercentageInMenu") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "showPercentageInMenu") }
+    }
+    var showTimeInMenu: Bool {
+        get { UserDefaults.standard.object(forKey: "showTimeInMenu") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "showTimeInMenu") }
+    }
     
     var screenOnTime: TimeInterval {
         get { UserDefaults.standard.double(forKey: "screenOnTime") }
@@ -39,6 +57,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         let menu = NSMenu()
+        
+        batteryHealthItem = NSMenuItem(title: "Pil Sağlığı: --", action: #selector(dummyAction), keyEquivalent: "")
+        batteryHealthItem.target = self
+        menu.addItem(batteryHealthItem)
+        
         averageWattageItem = NSMenuItem(title: "Ortalama: -- W", action: #selector(dummyAction), keyEquivalent: "")
         averageWattageItem.target = self
         menu.addItem(averageWattageItem)
@@ -81,6 +104,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
+        let appearanceMenu = NSMenu()
+        showWattItem = NSMenuItem(title: "Watt Göster", action: #selector(toggleShowWatt), keyEquivalent: "")
+        showPercentageItem = NSMenuItem(title: "Yüzde Göster", action: #selector(toggleShowPercentage), keyEquivalent: "")
+        showTimeItem = NSMenuItem(title: "Süre Göster", action: #selector(toggleShowTime), keyEquivalent: "")
+        appearanceMenu.addItem(showWattItem)
+        appearanceMenu.addItem(showPercentageItem)
+        appearanceMenu.addItem(showTimeItem)
+        
+        let appearanceMenuItem = NSMenuItem(title: "Görünüm Seçenekleri", action: nil, keyEquivalent: "")
+        appearanceMenuItem.submenu = appearanceMenu
+        menu.addItem(appearanceMenuItem)
+        
+        let openBatterySettingsItem = NSMenuItem(title: "Pil Ayarlarını Aç", action: #selector(openBatterySettings), keyEquivalent: "")
+        menu.addItem(openBatterySettingsItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
         loginItem = NSMenuItem(title: "Başlangıçta Aç", action: #selector(toggleLoginItem), keyEquivalent: "")
         menu.addItem(loginItem)
         menu.addItem(NSMenuItem.separator())
@@ -92,6 +132,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(screenDidWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
         lastUpdateDate = Date()
         
+        updateAppearanceMenuState()
         updateLoginItemState()
         updateBatteryStatus()
         
@@ -125,6 +166,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc func dummyAction(_ sender: Any?) {}
+    
+    @objc func toggleShowWatt() {
+        showWattInMenu.toggle()
+        updateAppearanceMenuState()
+        updateBatteryStatus()
+    }
+    
+    @objc func toggleShowPercentage() {
+        showPercentageInMenu.toggle()
+        updateAppearanceMenuState()
+        updateBatteryStatus()
+    }
+    
+    @objc func toggleShowTime() {
+        showTimeInMenu.toggle()
+        updateAppearanceMenuState()
+        updateBatteryStatus()
+    }
+    
+    func updateAppearanceMenuState() {
+        showWattItem.state = showWattInMenu ? .on : .off
+        showPercentageItem.state = showPercentageInMenu ? .on : .off
+        showTimeItem.state = showTimeInMenu ? .on : .off
+    }
+    
+    @objc func openBatterySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.battery") {
+            NSWorkspace.shared.open(url)
+        }
+    }
     
     @objc func closeAllApps() {
         let apps = NSWorkspace.shared.runningApplications
@@ -276,6 +347,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 attrStr.append(valAttrStr)
                 temperatureItem.attributedTitle = attrStr
             }
+            
+            var cycleCount = 0
+            var designCapacity = 0
+            var maxCapacityFromSmart = 0
+
+            if let cycleRef = IORegistryEntryCreateCFProperty(service, "CycleCount" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+                cycleCount = cycleRef
+            }
+            if let designRef = IORegistryEntryCreateCFProperty(service, "DesignCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+                designCapacity = designRef
+            }
+            if let maxCapRef = IORegistryEntryCreateCFProperty(service, "MaxCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+                maxCapacityFromSmart = maxCapRef
+            }
+            
+            if designCapacity > 0 && maxCapacityFromSmart > 0 {
+                let health = (Double(maxCapacityFromSmart) / Double(designCapacity)) * 100.0
+                
+                let healthPrefix = "Pil Sağlığı: "
+                let healthValue = String(format: "%%%d (%d Devir)", Int(health), cycleCount)
+                
+                let menuFont = NSFont.menuFont(ofSize: 0)
+                
+                let attrStr = NSMutableAttributedString(string: healthPrefix, attributes: [
+                    .font: menuFont,
+                    .foregroundColor: NSColor.textColor
+                ])
+                let valAttrStr = NSAttributedString(string: healthValue, attributes: [
+                    .font: menuFont,
+                    .foregroundColor: (health >= 80) ? NSColor.systemGreen : NSColor.systemRed
+                ])
+                attrStr.append(valAttrStr)
+                batteryHealthItem.attributedTitle = attrStr
+            } else {
+                batteryHealthItem.title = "Pil Sağlığı: Hesaplanamıyor"
+            }
+            
             IOObjectRelease(service)
         }
         
@@ -403,20 +511,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var timeString = ""
         
         if isFullyCharged {
-            timeString = " (Dolu)"
+            timeString = "(Dolu)"
         } else if timeRemaining > 0 && timeRemaining < 6000 {
             let hours = timeRemaining / 60
             let minutes = timeRemaining % 60
             if hours > 0 {
-                timeString = " (\(hours)s \(minutes)d)"
+                timeString = "(\(hours)s \(minutes)d)"
             } else {
-                timeString = " (\(minutes)d)"
+                timeString = "(\(minutes)d)"
             }
         } else {
-            timeString = " (Hesaplanıyor...)"
+            timeString = "(...)"
         }
         
-        let title = wattString + timeString
+        var titleComponents: [String] = []
+        if showWattInMenu {
+            titleComponents.append(wattString)
+        }
+        if showPercentageInMenu {
+            titleComponents.append(String(format: "%%%d", Int(percentage)))
+        }
+        if showTimeInMenu {
+            titleComponents.append(timeString)
+        }
+        
+        let title = titleComponents.joined(separator: " ")
         
         if let button = statusItem.button {
             button.title = title
