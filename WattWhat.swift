@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    let appVersion = "1.5.3"
+    let appVersion = "1.5.4"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var updateTimer: Timer?
@@ -446,7 +446,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 health = min(health, 100.0)
                 
                 let healthPrefix = "Pil Sağlığı: "
-                let healthValue = String(format: "%%%d (%d mAh Kaldı, %d Devir)", Int(health), maxCapacityFromSmart, cycleCount)
+                let healthValue = String(format: "%%%.1f (%d mAh Kaldı, %d Devir)", health, maxCapacityFromSmart, cycleCount)
                 
                 let menuFont = NSFont.menuFont(ofSize: 0)
                 
