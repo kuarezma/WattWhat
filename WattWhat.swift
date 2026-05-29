@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    let appVersion = "1.4.0"
+    let appVersion = "1.5.0"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var loginItem: NSMenuItem!
