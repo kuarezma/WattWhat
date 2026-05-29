@@ -10,9 +10,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var loginItem: NSMenuItem!
     var averageWattageItem: NSMenuItem!
     var temperatureItem: NSMenuItem!
+    var cpuTemperatureItem: NSMenuItem!
     var topApp1Item: NSMenuItem!
     var topApp2Item: NSMenuItem!
+    var topApp3Item: NSMenuItem!
     var screenOnTimeItem: NSMenuItem!
+    
+    let cpuTempReader = CPUTemperatureReader()
     
     var screenOnTime: TimeInterval {
         get { UserDefaults.standard.double(forKey: "screenOnTime") }
@@ -26,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var wasCharging: Bool = false
     var hasNotifiedFullCharge = false
     var hasNotifiedLowBattery = false
+    var hasNotifiedEightyPercent = false
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         UNUserNotificationCenter.current().delegate = self
@@ -42,6 +47,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         temperatureItem.target = self
         menu.addItem(temperatureItem)
         
+        cpuTemperatureItem = NSMenuItem(title: "İşlemci Sıcaklığı: -- °C", action: #selector(dummyAction), keyEquivalent: "")
+        cpuTemperatureItem.target = self
+        menu.addItem(cpuTemperatureItem)
+        
         screenOnTimeItem = NSMenuItem(title: "Ekran Süresi: --", action: #selector(dummyAction), keyEquivalent: "")
         screenOnTimeItem.target = self
         menu.addItem(screenOnTimeItem)
@@ -55,6 +64,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         topApp2Item = NSMenuItem(title: "2. -- (0.0 W)", action: nil, keyEquivalent: "")
         topApp2Item.isEnabled = false
         menu.addItem(topApp2Item)
+        
+        topApp3Item = NSMenuItem(title: "3. -- (0.0 W)", action: nil, keyEquivalent: "")
+        topApp3Item.isEnabled = false
+        menu.addItem(topApp3Item)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -137,7 +150,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 if let output = String(data: data, encoding: .utf8) {
                     let lines = output.components(separatedBy: .newlines).dropFirst()
-                    var appCPUs: [(name: String, cpu: Double)] = []
+                    var appTotals: [String: Double] = [:]
                     var totalCPU: Double = 0.0
                     
                     for line in lines {
@@ -153,28 +166,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                 continue
                             }
                             
-                            let name = (comm as NSString).lastPathComponent
-                            appCPUs.append((name: name, cpu: cpu))
+                            let baseName = (comm as NSString).lastPathComponent
+                            
+                            var appName = baseName
+                            if let range = appName.range(of: " Helper", options: .caseInsensitive) {
+                                appName = String(appName[..<range.lowerBound])
+                            }
+                            appName = appName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if appName.isEmpty { appName = baseName }
+                            
+                            appTotals[appName, default: 0.0] += cpu
                         }
                     }
                     
+                    let appCPUs = appTotals.map { (name: $0.key, cpu: $0.value) }
                     let sorted = appCPUs.sorted { $0.cpu > $1.cpu }
-                    let top2 = Array(sorted.prefix(2))
+                    let top3 = Array(sorted.prefix(3))
                     let baseCPU = max(totalCPU, 1.0)
                     
                     DispatchQueue.main.async {
-                        if top2.count > 0 {
-                            let w1 = (top2[0].cpu / baseCPU) * totalWatts
-                            self.topApp1Item.title = String(format: "1. %@ (%.1f W)", top2[0].name, w1)
+                        if top3.count > 0 {
+                            let w1 = (top3[0].cpu / baseCPU) * totalWatts
+                            self.topApp1Item.title = String(format: "1. %@ (%.1f W)", top3[0].name, w1)
                         } else {
                             self.topApp1Item.title = "1. -- (0.0 W)"
                         }
                         
-                        if top2.count > 1 {
-                            let w2 = (top2[1].cpu / baseCPU) * totalWatts
-                            self.topApp2Item.title = String(format: "2. %@ (%.1f W)", top2[1].name, w2)
+                        if top3.count > 1 {
+                            let w2 = (top3[1].cpu / baseCPU) * totalWatts
+                            self.topApp2Item.title = String(format: "2. %@ (%.1f W)", top3[1].name, w2)
                         } else {
                             self.topApp2Item.title = "2. -- (0.0 W)"
+                        }
+                        
+                        if top3.count > 2 {
+                            let w3 = (top3[2].cpu / baseCPU) * totalWatts
+                            self.topApp3Item.title = String(format: "3. %@ (%.1f W)", top3[2].name, w3)
+                        } else {
+                            self.topApp3Item.title = "3. -- (0.0 W)"
                         }
                     }
                 }
@@ -248,6 +277,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 temperatureItem.attributedTitle = attrStr
             }
             IOObjectRelease(service)
+        }
+        
+        if let cpuTemp = cpuTempReader.readCPUTemperature() {
+            let cpuPrefix = "İşlemci Sıcaklığı: "
+            let remaining = max(100.0 - cpuTemp, 0.0)
+            let cpuValue = String(format: "%.1f °C", cpuTemp)
+            let remainingValue = String(format: " (Throttling'e %.1f °C)", remaining)
+            let menuFont = NSFont.menuFont(ofSize: 0)
+            
+            let attrStr = NSMutableAttributedString(string: cpuPrefix, attributes: [
+                .font: menuFont,
+                .foregroundColor: NSColor.textColor
+            ])
+            
+            let tempColor: NSColor
+            if cpuTemp >= 75.0 {
+                tempColor = NSColor.systemRed
+            } else if cpuTemp >= 55.0 {
+                tempColor = NSColor.systemOrange
+            } else {
+                tempColor = NSColor.systemBlue
+            }
+            
+            let valAttrStr = NSAttributedString(string: cpuValue, attributes: [
+                .font: menuFont,
+                .foregroundColor: tempColor
+            ])
+            attrStr.append(valAttrStr)
+            
+            let remainingAttrStr = NSAttributedString(string: remainingValue, attributes: [
+                .font: menuFont,
+                .foregroundColor: NSColor.secondaryLabelColor
+            ])
+            attrStr.append(remainingAttrStr)
+            
+            cpuTemperatureItem.attributedTitle = attrStr
+        } else {
+            cpuTemperatureItem.title = "İşlemci Sıcaklığı: -- °C"
         }
         
         updateTopAppsBackground(totalWatts: watts)
@@ -370,8 +437,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 sendNotification(title: "Pil Tamamen Doldu ⚡️", body: "Pil %100 oldu, bilgisayarınızı şarjdan çekebilirsiniz.")
                 hasNotifiedFullCharge = true
             }
+            if percentage >= 80.0 && !hasNotifiedEightyPercent {
+                sendNotification(title: "Pil %80 Seviyesine Ulaştı 🔋", body: "Pil sağlığını korumak için şarj cihazını çıkarabilirsiniz.")
+                hasNotifiedEightyPercent = true
+            }
         } else {
             hasNotifiedFullCharge = false
+            hasNotifiedEightyPercent = false
             if percentage <= 20.0 && percentage > 0 && !hasNotifiedLowBattery {
                 sendNotification(title: "Düşük Pil Uyarısı 🔋", body: "Piliniz %\u{200B}\(Int(percentage)) değerinin altına düştü, lütfen şarja takın.")
                 hasNotifiedLowBattery = true
@@ -379,6 +451,92 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 hasNotifiedLowBattery = false
             }
         }
+    }
+}
+
+class CPUTemperatureReader {
+    private typealias IOHIDEventSystemClient = AnyObject
+    private typealias IOHIDServiceClient = AnyObject
+    private typealias IOHIDEvent = AnyObject
+
+    private typealias IOHIDEventSystemClientCreate = @convention(c) (_ allocator: CFAllocator?) -> IOHIDEventSystemClient?
+    private typealias IOHIDEventSystemClientSetMatching = @convention(c) (_ client: IOHIDEventSystemClient?, _ matches: CFDictionary?) -> Void
+    private typealias IOHIDEventSystemClientCopyServices = @convention(c) (_ client: IOHIDEventSystemClient?) -> CFArray?
+    private typealias IOHIDServiceClientCopyEvent = @convention(c) (_ client: IOHIDServiceClient?, _ eventType: Int64, _ option: Int32, _ mask: Int64) -> IOHIDEvent?
+    private typealias IOHIDEventGetFloatValue = @convention(c) (_ event: IOHIDEvent?, _ field: UInt32) -> Double
+    private typealias IOHIDServiceClientCopyProperty = @convention(c) (_ service: IOHIDServiceClient?, _ property: CFString?) -> CFTypeRef?
+
+    private var client: IOHIDEventSystemClient?
+    private var eventSystemClientCopyServices: IOHIDEventSystemClientCopyServices?
+    private var serviceClientCopyEvent: IOHIDServiceClientCopyEvent?
+    private var eventGetFloatValue: IOHIDEventGetFloatValue?
+    private var serviceClientCopyProperty: IOHIDServiceClientCopyProperty?
+
+    init() {
+        guard let handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW) else { return }
+        
+        let clientCreate = dlsym(handle, "IOHIDEventSystemClientCreate").map {
+            unsafeBitCast($0, to: IOHIDEventSystemClientCreate.self)
+        }
+        let clientSetMatching = dlsym(handle, "IOHIDEventSystemClientSetMatching").map {
+            unsafeBitCast($0, to: IOHIDEventSystemClientSetMatching.self)
+        }
+        eventSystemClientCopyServices = dlsym(handle, "IOHIDEventSystemClientCopyServices").map {
+            unsafeBitCast($0, to: IOHIDEventSystemClientCopyServices.self)
+        }
+        serviceClientCopyEvent = dlsym(handle, "IOHIDServiceClientCopyEvent").map {
+            unsafeBitCast($0, to: IOHIDServiceClientCopyEvent.self)
+        }
+        eventGetFloatValue = dlsym(handle, "IOHIDEventGetFloatValue").map {
+            unsafeBitCast($0, to: IOHIDEventGetFloatValue.self)
+        }
+        serviceClientCopyProperty = dlsym(handle, "IOHIDServiceClientCopyProperty").map {
+            unsafeBitCast($0, to: IOHIDServiceClientCopyProperty.self)
+        }
+
+        if let clientCreate = clientCreate, let clientSetMatching = clientSetMatching {
+            client = clientCreate(kCFAllocatorDefault)
+            clientSetMatching(client, [
+                "PrimaryUsage": 5,
+                "PrimaryUsagePage": 65280
+            ] as CFDictionary)
+        }
+    }
+
+    func readCPUTemperature() -> Double? {
+        guard let client = client,
+              let copyServices = eventSystemClientCopyServices,
+              let copyEvent = serviceClientCopyEvent,
+              let getFloatValue = eventGetFloatValue,
+              let copyProperty = serviceClientCopyProperty else {
+            return nil
+        }
+
+        guard let services = copyServices(client) as? [IOHIDServiceClient] else {
+            return nil
+        }
+
+        var tdieTemperatures: [Double] = []
+
+        for service in services {
+            if let nameRef = copyProperty(service, "Product" as CFString) {
+                let name = nameRef as! String
+                if name.contains("tdie") {
+                    if let event = copyEvent(service, 15, 0, 0) {
+                        let temp = getFloatValue(event, 983040)
+                        if temp > 0 && temp < 150 {
+                            tdieTemperatures.append(temp)
+                        }
+                    }
+                }
+            }
+        }
+
+        if tdieTemperatures.isEmpty {
+            return nil
+        }
+        
+        return tdieTemperatures.max()
     }
 }
 
