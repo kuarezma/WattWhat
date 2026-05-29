@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    let appVersion = "1.5.0"
+    let appVersion = "1.5.1"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var loginItem: NSMenuItem!
@@ -421,12 +421,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let designRef = IORegistryEntryCreateCFProperty(service, "DesignCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
                 designCapacity = designRef
             }
-            if let maxCapRef = IORegistryEntryCreateCFProperty(service, "MaxCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+            
+            if let appleRawRef = IORegistryEntryCreateCFProperty(service, "AppleRawMaxCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+                maxCapacityFromSmart = appleRawRef
+            } else if let nominalRef = IORegistryEntryCreateCFProperty(service, "NominalChargeCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+                maxCapacityFromSmart = nominalRef
+            } else if let maxCapRef = IORegistryEntryCreateCFProperty(service, "MaxCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
                 maxCapacityFromSmart = maxCapRef
             }
             
             if designCapacity > 0 && maxCapacityFromSmart > 0 {
-                let health = (Double(maxCapacityFromSmart) / Double(designCapacity)) * 100.0
+                var health = 0.0
+                if maxCapacityFromSmart <= 100 && designCapacity > 1000 {
+                    // Fallback if MaxCapacity is just returning percentage
+                    health = Double(maxCapacityFromSmart)
+                } else {
+                    health = (Double(maxCapacityFromSmart) / Double(designCapacity)) * 100.0
+                }
+                
+                // Cap health at 100% just in case
+                health = min(health, 100.0)
                 
                 let healthPrefix = "Pil Sağlığı: "
                 let healthValue = String(format: "%%%d ( %d Devir )", Int(health), cycleCount)
