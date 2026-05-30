@@ -1,3 +1,5 @@
 *.app/
 *.zip
 .DS_Store
+*.dmg
+*.pkg

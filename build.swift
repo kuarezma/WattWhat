@@ -24,11 +24,19 @@ run("mkdir -p WattWhat.app/Contents/MacOS")
 print("🛠 Compiling WattWhat.swift...")
 run("swiftc WattWhat.swift -o WattWhat.app/Contents/MacOS/WattWhat")
 
-// 3. Create a ZIP archive
+// 3. Codesign the app to prevent some Gatekeeper errors
+print("✍️ Codesigning the App...")
+run("codesign --force --deep -s - WattWhat.app")
+
+// 4. Create a ZIP archive
 print("📦 Creating ZIP archive...")
 run("zip -r WattWhat.zip WattWhat.app")
 
-// 4. Create a DMG disk image
+// 5. Create a PKG installer
+print("📦 Creating PKG installer...")
+run("pkgbuild --root WattWhat.app --identifier com.kuarezma.wattwhat --version 1.5.4 --install-location /Applications/WattWhat.app WattWhat.pkg")
+
+// 6. Create a DMG disk image
 print("💿 Creating DMG disk image...")
 run("rm -rf DMGStaging WattWhat.dmg")
 run("mkdir -p DMGStaging")
@@ -37,5 +45,23 @@ run("ln -s /Applications DMGStaging/Applications")
 run("hdiutil create -volname 'WattWhat' -srcfolder DMGStaging -ov -format UDZO WattWhat.dmg")
 run("rm -rf DMGStaging")
 
+// 7. Create Install Command script
+print("📜 Creating Install Script...")
+let installScript = """
+#!/bin/bash
+echo "WattWhat Kurulumu Başlıyor..."
+echo "Lütfen bekleyin..."
+curl -sL https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o /tmp/WattWhat.zip
+unzip -oq /tmp/WattWhat.zip -d /Applications
+xattr -cr /Applications/WattWhat.app
+rm /tmp/WattWhat.zip
+open /Applications/WattWhat.app
+echo "Kurulum başarıyla tamamlandı! Bu pencereyi kapatabilirsiniz."
+"""
+let scriptURL = URL(fileURLWithPath: "Yukle_WattWhat.command")
+try? installScript.write(to: scriptURL, atomically: true, encoding: .utf8)
+run("chmod +x Yukle_WattWhat.command")
+
 print("✅ Build Process Completed Successfully!")
-print("📂 Outputs: WattWhat.app, WattWhat.zip, WattWhat.dmg")
+print("📂 Outputs: WattWhat.app, WattWhat.zip, WattWhat.dmg, WattWhat.pkg, Yukle_WattWhat.command")
+

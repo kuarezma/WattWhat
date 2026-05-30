@@ -52,6 +52,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var hasNotifiedLowBattery = false
     var hasNotifiedEightyPercent = false
     
+    var cachedSystemProfilerBatteryHealth: Double?
+    
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -138,9 +140,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateLoginItemState()
         updateBatteryStatus()
         
-        checkForUpdates()
+        checkForUpdatesAndHealth()
         
-        updateTimer = Timer.scheduledTimer(timeInterval: 43200.0, target: self, selector: #selector(checkForUpdates), userInfo: nil, repeats: true)
+        updateTimer = Timer.scheduledTimer(timeInterval: 43200.0, target: self, selector: #selector(checkForUpdatesAndHealth), userInfo: nil, repeats: true)
         
         timer = Timer.scheduledTimer(timeInterval: 3.0, target: self, selector: #selector(updateBatteryStatus), userInfo: nil, repeats: true)
     }
@@ -212,6 +214,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("Failed to run update script")
         }
         NSApplication.shared.terminate(nil)
+    }
+    
+    @objc func checkForUpdatesAndHealth() {
+        checkForUpdates()
+        updateSystemProfilerBatteryHealth()
+    }
+    
+    @objc func updateSystemProfilerBatteryHealth() {
+        DispatchQueue.global(qos: .background).async {
+            let task = Process()
+            task.launchPath = "/usr/sbin/system_profiler"
+            task.arguments = ["SPPowerDataType"]
+            
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            
+            do {
+                try task.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: data, encoding: .utf8) {
+                    let regex = try NSRegularExpression(pattern: "Maximum Capacity:\\s*[%]?(\\d+)[%]?", options: .caseInsensitive)
+                    if let match = regex.firstMatch(in: output, options: [], range: NSRange(location: 0, length: output.utf16.count)) {
+                        if let range = Range(match.range(at: 1), in: output), let percentage = Double(String(output[range])) {
+                            DispatchQueue.main.async {
+                                self.cachedSystemProfilerBatteryHealth = percentage
+                                self.updateBatteryStatus()
+                            }
+                        }
+                    }
+                }
+            } catch {
+                print("Failed to get system_profiler battery health")
+            }
+        }
     }
     
     @objc func screenDidSleep() { isScreenOn = false }
@@ -435,7 +471,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             if designCapacity > 0 && maxCapacityFromSmart > 0 {
                 var health = 0.0
-                if maxCapacityFromSmart <= 100 && designCapacity > 1000 {
+                if let sysHealth = cachedSystemProfilerBatteryHealth {
+                    health = sysHealth
+                } else if maxCapacityFromSmart <= 100 && designCapacity > 1000 {
                     // Fallback if MaxCapacity is just returning percentage
                     health = Double(maxCapacityFromSmart)
                 } else {
@@ -446,7 +484,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 health = min(health, 100.0)
                 
                 let healthPrefix = "Pil Sağlığı: "
-                let healthValue = String(format: "%%%.1f (%d mAh Kaldı, %d Devir)", health, maxCapacityFromSmart, cycleCount)
+                let healthValue = String(format: "%%%.0f (%d mAh Kaldı, %d Devir)", health, maxCapacityFromSmart, cycleCount)
                 
                 let menuFont = NSFont.menuFont(ofSize: 0)
                 
