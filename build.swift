@@ -34,7 +34,7 @@ run("zip -r WattWhat.zip WattWhat.app")
 
 // 5. Create a PKG installer
 print("📦 Creating PKG installer...")
-run("pkgbuild --root WattWhat.app --identifier com.kuarezma.wattwhat --version 1.5.5 --install-location /Applications/WattWhat.app WattWhat.pkg")
+run("pkgbuild --root WattWhat.app --identifier com.kuarezma.wattwhat --version 1.5.6 --install-location /Applications/WattWhat.app WattWhat.pkg")
 
 // 6. Create a DMG disk image
 print("💿 Creating DMG disk image...")

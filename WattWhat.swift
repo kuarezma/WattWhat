@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    let appVersion = "1.5.5"
+    let appVersion = "1.5.6"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var updateTimer: Timer?
@@ -53,6 +53,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var hasNotifiedEightyPercent = false
     
     var cachedSystemProfilerBatteryHealth: Double?
+
+    var lastWatts: Double = 0.0
+    var lastPercentage: Double = 0.0
+    var lastTimeString: String = "(...)"
+    var lastIsCharging: Bool = false
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         UNUserNotificationCenter.current().delegate = self
@@ -192,7 +197,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func showUpdateAlert(newVersion: String) {
         let alert = NSAlert()
         alert.messageText = "Yeni Güncelleme Mevcut! 🚀"
-        alert.informativeText = "WattWhat'ın yeni sürümü (\(newVersion)) çıktı. Şimdi güncellemek ister misiniz?\\n\\nGüncelle işlemi arka planda sessizce indirilecek ve uygulama yeniden başlatılacaktır."
+        alert.informativeText = "WattWhat'ın yeni sürümü (\(newVersion)) çıktı. Şimdi güncellemek ister misiniz?\n\nGüncelle işlemi arka planda sessizce indirilecek ve uygulama yeniden başlatılacaktır."
         alert.addButton(withTitle: "Güncelle")
         alert.addButton(withTitle: "Daha Sonra")
         alert.alertStyle = .informational
@@ -272,19 +277,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleShowWatt() {
         showWattInMenu.toggle()
         updateAppearanceMenuState()
-        updateBatteryStatus()
+        refreshStatusBarTitle()
     }
-    
+
     @objc func toggleShowPercentage() {
         showPercentageInMenu.toggle()
         updateAppearanceMenuState()
-        updateBatteryStatus()
+        refreshStatusBarTitle()
     }
-    
+
     @objc func toggleShowTime() {
         showTimeInMenu.toggle()
         updateAppearanceMenuState()
-        updateBatteryStatus()
+        refreshStatusBarTitle()
     }
     
     func updateAppearanceMenuState() {
@@ -309,7 +314,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    func updateTopAppsBackground(totalWatts: Double) {
+    func updateTopAppsBackground(totalWatts: Double, isCharging: Bool) {
         DispatchQueue.global(qos: .background).async {
             let task = Process()
             task.launchPath = "/bin/ps"
@@ -358,26 +363,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     let baseCPU = max(totalCPU, 1.0)
                     
                     DispatchQueue.main.async {
-                        if top3.count > 0 {
-                            let w1 = (top3[0].cpu / baseCPU) * totalWatts
-                            self.topApp1Item.title = String(format: "1. %@ (%.1f W)", top3[0].name, w1)
-                        } else {
-                            self.topApp1Item.title = "1. -- (0.0 W)"
+                        // Şarjdayken ölçülen watt pile giren şarj gücüdür, tüketim değil;
+                        // uygulamalara bölmek yanıltıcı olur, o yüzden CPU payını gösteririz.
+                        let label: (Int, (name: String, cpu: Double)) -> String = { idx, app in
+                            if isCharging {
+                                return String(format: "%d. %@ (%%%.1f CPU)", idx, app.name, app.cpu)
+                            } else {
+                                let w = (app.cpu / baseCPU) * totalWatts
+                                return String(format: "%d. %@ (%.1f W)", idx, app.name, w)
+                            }
                         }
-                        
-                        if top3.count > 1 {
-                            let w2 = (top3[1].cpu / baseCPU) * totalWatts
-                            self.topApp2Item.title = String(format: "2. %@ (%.1f W)", top3[1].name, w2)
-                        } else {
-                            self.topApp2Item.title = "2. -- (0.0 W)"
-                        }
-                        
-                        if top3.count > 2 {
-                            let w3 = (top3[2].cpu / baseCPU) * totalWatts
-                            self.topApp3Item.title = String(format: "3. %@ (%.1f W)", top3[2].name, w3)
-                        } else {
-                            self.topApp3Item.title = "3. -- (0.0 W)"
-                        }
+                        self.topApp1Item.title = top3.count > 0 ? label(1, top3[0]) : "1. -- (0.0 W)"
+                        self.topApp2Item.title = top3.count > 1 ? label(2, top3[1]) : "2. -- (0.0 W)"
+                        self.topApp3Item.title = top3.count > 2 ? label(3, top3[2]) : "3. -- (0.0 W)"
                     }
                 }
             } catch {
@@ -419,6 +417,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    func refreshStatusBarTitle() {
+        let wattString = String(format: "%.1fW", lastWatts)
+        var titleComponents: [String] = []
+        if showWattInMenu {
+            titleComponents.append(wattString)
+        }
+        if showPercentageInMenu {
+            titleComponents.append(String(format: "%%%d", Int(lastPercentage)))
+        }
+        if showTimeInMenu {
+            titleComponents.append(lastTimeString)
+        }
+
+        let title = titleComponents.joined(separator: " ")
+
+        if let button = statusItem.button {
+            let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+            button.attributedTitle = NSAttributedString(string: title, attributes: [.font: font])
+
+            let config = NSImage.SymbolConfiguration(paletteColors: [lastIsCharging ? NSColor.systemGreen : NSColor.systemYellow])
+            let symbol = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
+            symbol?.isTemplate = false
+            button.image = symbol
+            button.imagePosition = .imageLeft
+        }
+    }
+
     @objc func updateBatteryStatus() {
         let now = Date()
         let delta = now.timeIntervalSince(lastUpdateDate)
@@ -484,7 +509,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 health = min(health, 100.0)
                 
                 let healthPrefix = "Pil Sağlığı: "
-                let healthValue = String(format: "%%%.0f (%d mAh Kaldı, %d Devir)", health, maxCapacityFromSmart, cycleCount)
+                // maxCapacityFromSmart <= 100 ise değer mAh değil yüzdedir; "mAh" etiketini gösterme.
+                let healthValue: String
+                if maxCapacityFromSmart > 100 {
+                    healthValue = String(format: "%%%.0f (%d mAh Kaldı, %d Devir)", health, maxCapacityFromSmart, cycleCount)
+                } else {
+                    healthValue = String(format: "%%%.0f (%d Devir)", health, cycleCount)
+                }
                 
                 let menuFont = NSFont.menuFont(ofSize: 0)
                 
@@ -543,8 +574,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             cpuTemperatureItem.title = "İşlemci Sıcaklığı: -- °C"
         }
         
-        updateTopAppsBackground(totalWatts: watts)
-        
         var isCharging = false
         var timeRemaining: Int = 0
         var isFullyCharged = false
@@ -576,6 +605,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
+        updateTopAppsBackground(totalWatts: watts, isCharging: isCharging)
+
         if isCharging != wasCharging {
             if !isCharging {
                 screenOnTime = 0
@@ -625,9 +656,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         screenOnAttrStr.append(screenOnValAttrStr)
         screenOnTimeItem.attributedTitle = screenOnAttrStr
         
-        let wattString = String(format: "%.1fW", watts)
         var timeString = ""
-        
         if isFullyCharged {
             timeString = "(Dolu)"
         } else if timeRemaining > 0 && timeRemaining < 6000 {
@@ -641,33 +670,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             timeString = "(...)"
         }
-        
-        var titleComponents: [String] = []
-        if showWattInMenu {
-            titleComponents.append(wattString)
-        }
-        if showPercentageInMenu {
-            titleComponents.append(String(format: "%%%d", Int(percentage)))
-        }
-        if showTimeInMenu {
-            titleComponents.append(timeString)
-        }
-        
-        let title = titleComponents.joined(separator: " ")
-        
-        if let button = statusItem.button {
-            button.title = title
-            let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-            let attributes: [NSAttributedString.Key: Any] = [.font: font]
-            button.attributedTitle = NSAttributedString(string: title, attributes: attributes)
-            
-            let config = NSImage.SymbolConfiguration(paletteColors: [isCharging ? NSColor.systemGreen : NSColor.systemYellow])
-            let symbol = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
-            symbol?.isTemplate = false
-            button.image = symbol
-            button.imagePosition = .imageLeft
-        }
-        
+
+        lastWatts = watts
+        lastPercentage = percentage
+        lastTimeString = timeString
+        lastIsCharging = isCharging
+        refreshStatusBarTitle()
+
         if isCharging {
             hasNotifiedLowBattery = false
             if isFullyCharged && !hasNotifiedFullCharge {
