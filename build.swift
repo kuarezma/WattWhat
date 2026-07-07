@@ -24,6 +24,39 @@ run("mkdir -p WattWhat.app/Contents/MacOS")
 print("🛠 Compiling WattWhat.swift...")
 run("swiftc WattWhat.swift -o WattWhat.app/Contents/MacOS/WattWhat")
 
+// 2b. Write Info.plist — without a bundle identifier UNUserNotificationCenter
+//     throws at launch; LSUIElement keeps it a menu-bar-only agent (no Dock icon).
+let appVersion = "1.5.6"
+let infoPlist = """
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>WattWhat</string>
+    <key>CFBundleDisplayName</key>
+    <string>WattWhat</string>
+    <key>CFBundleExecutable</key>
+    <string>WattWhat</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.kuarezma.wattwhat</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>\(appVersion)</string>
+    <key>CFBundleVersion</key>
+    <string>\(appVersion)</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+</dict>
+</plist>
+"""
+try? infoPlist.write(to: URL(fileURLWithPath: "WattWhat.app/Contents/Info.plist"), atomically: true, encoding: .utf8)
+
 // 3. Codesign the app to prevent some Gatekeeper errors
 print("✍️ Codesigning the App...")
 run("codesign --force --deep -s - WattWhat.app")
