@@ -12,6 +12,11 @@ A minimalist and smart macOS menu bar application built with pure Swift that mon
 - **Time Remaining:** Shows exactly how much time is left until your battery is fully charged or completely empty, in a clean `(1s 20d)` format.
 - **Battery Temperature:** Monitors the `AppleSmartBattery` sensor to show real-time temperature in °C.
 - **Per-App Energy:** Ranks the three applications with the highest kernel-attributed process energy over the latest 3-second sample. Helper and child processes are grouped under their parent application.
+- **Flexible Measurement Windows:** Switch between 3-second live, 30-second average, and 5-minute average views. Each row shows its share of app-attributed energy and the current measurement coverage.
+- **Energy History Dashboard:** Stores seven days of local history and presents separate battery-flow and app-attributed-energy charts for 1 hour, 24 hours, or 7 days.
+- **CSV Export:** Exports timestamped battery power, charge state, app-attributed power, coverage, and top applications.
+- **Smart Alerts:** Warns about sustained high-consumption apps, rapid battery drain, high battery temperature, critical thermal pressure, and useful Low Power Mode opportunities.
+- **Application Details:** Expands each app into its helper-process contributions and provides Activate, Reveal in Finder, and confirmed Quit actions.
 - **True Battery Health:** Automatically reads and displays the exact official battery health percentage from `system_profiler` to match macOS System Settings perfectly.
 - **Smart Notifications:** Sends elegant macOS system notifications when your battery is fully charged (100%) or drops below 20%.
 - **Launch at Login:** Includes a built-in toggle using native `SMAppService` to automatically start when you turn on your Mac.
@@ -21,6 +26,8 @@ A minimalist and smart macOS menu bar application built with pure Swift that mon
 WattWhat directly queries the macOS `IOKit` framework and `AppleSmartBattery` registry to read raw hardware sensors like `Voltage` and `Amperage`. It calculates true instantaneous wattage (`Watts = Voltage * Amperage / 1,000,000`) every 3 seconds for extreme accuracy, bypassing the delay often seen in standard system monitors.
 
 Per-app values are measured independently from the battery total. WattWhat samples macOS process resource counters (`ri_energy_nj`) and converts the energy delta into watts. These values represent energy attributed by macOS to application processes; they do not divide total battery wattage by CPU percentage.
+
+Energy history is saved locally under the user's Application Support directory. No history or application-usage data is uploaded. Samples are retained for seven days and written at most once every 30 seconds.
 
 ### Installation Methods
 
@@ -34,7 +41,7 @@ There are several ways to install WattWhat depending on your preference. All ava
 *Note: If you use the DMG or ZIP and get an "app is damaged and cannot be opened" error, this is a standard macOS security feature for unsigned apps. To fix it quickly, open Terminal and run `xattr -cr /Applications/WattWhat.app`.*
 
 ### Building from Source
-Since WattWhat is a single Swift file, it is incredibly easy to compile and run.
+WattWhat uses a small Swift core module plus native AppKit and SwiftUI/Charts interface files.
 
 1. Clone or download this repository.
 2. Open your terminal and navigate to the folder.
@@ -53,7 +60,7 @@ swift test
 Alternatively, to compile the app bundle manually:
 
 ```bash
-swiftc WattWhat.swift Sources/WattWhatCore/ProcessEnergy.swift -o "WattWhat.app/Contents/MacOS/WattWhat"
+swiftc WattWhat.swift Sources/WattWhatCore/*.swift Sources/WattWhatUI/*.swift -o "WattWhat.app/Contents/MacOS/WattWhat"
 ```
 
 ## Requirements
@@ -67,4 +74,5 @@ MIT License. Feel free to use, modify, and distribute as you wish!
 
 ## Changelog
 
-- **2026-07-07:** Replaced CPU-proportional estimated app wattage with measured process-energy deltas, application-level process grouping, and unit tests.
+- **2026-07-07 — v1.6.0:** Added 3-second/30-second/5-minute energy views, coverage and percentage reporting, seven-day history charts, CSV export, smart alerts, helper-process details, and safe per-app actions.
+- **2026-07-07 — v1.5.6:** Replaced CPU-proportional estimated app wattage with measured process-energy deltas, application-level process grouping, and unit tests.

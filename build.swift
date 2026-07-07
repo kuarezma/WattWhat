@@ -22,11 +22,11 @@ run("mkdir -p WattWhat.app/Contents/MacOS")
 
 // 2. Compile the Swift file
 print("🛠 Compiling WattWhat sources...")
-run("swiftc WattWhat.swift Sources/WattWhatCore/ProcessEnergy.swift -o WattWhat.app/Contents/MacOS/WattWhat")
+run("swiftc WattWhat.swift Sources/WattWhatCore/*.swift Sources/WattWhatUI/*.swift -o WattWhat.app/Contents/MacOS/WattWhat")
 
 // 2b. Write Info.plist — without a bundle identifier UNUserNotificationCenter
 //     throws at launch; LSUIElement keeps it a menu-bar-only agent (no Dock icon).
-let appVersion = "1.5.6"
+let appVersion = "1.6.0"
 let infoPlist = """
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,7 +47,7 @@ let infoPlist = """
     <key>CFBundleVersion</key>
     <string>\(appVersion)</string>
     <key>LSMinimumSystemVersion</key>
-    <string>12.0</string>
+    <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSPrincipalClass</key>
@@ -67,7 +67,7 @@ run("zip -r WattWhat.zip WattWhat.app")
 
 // 5. Create a PKG installer
 print("📦 Creating PKG installer...")
-run("pkgbuild --root WattWhat.app --identifier com.kuarezma.wattwhat --version 1.5.6 --install-location /Applications/WattWhat.app WattWhat.pkg")
+run("pkgbuild --root WattWhat.app --identifier com.kuarezma.wattwhat --version 1.6.0 --install-location /Applications/WattWhat.app WattWhat.pkg")
 
 // 6. Create a DMG disk image
 print("💿 Creating DMG disk image...")

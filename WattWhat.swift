@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    let appVersion = "1.5.6"
+    let appVersion = "1.6.0"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var updateTimer: Timer?
@@ -16,6 +16,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var topApp1Item: NSMenuItem!
     var topApp2Item: NSMenuItem!
     var topApp3Item: NSMenuItem!
+    var topAppsTitleItem: NSMenuItem!
+    var smartAlertsItem: NSMenuItem!
+    var energyWindowItems: [NSMenuItem] = []
+    var alertThresholdItems: [NSMenuItem] = []
     var screenOnTimeItem: NSMenuItem!
     var batteryHealthItem: NSMenuItem!
     
@@ -26,6 +30,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let cpuTempReader = CPUTemperatureReader()
     let processEnergyMonitor = ProcessEnergyMonitor()
     let processEnergyQueue = DispatchQueue(label: "com.wattwhat.process-energy", qos: .utility)
+    let applicationPowerTimeline = ApplicationPowerTimeline()
+    let smartAlertEvaluator = SmartAlertEvaluator()
+    lazy var energyHistoryStore = EnergyHistoryStore()
+    lazy var energyDashboardModel = makeEnergyDashboardModel()
+    var energyDashboardWindowController: EnergyDashboardWindowController?
+    var latestDisplayedUsages: [ApplicationPowerUsage] = []
+    var latestAllUsages: [ApplicationPowerUsage] = []
+    var latestAttributedWatts = 0.0
+    var latestCoverage = 0.0
+    var lastBatteryTemperature: Double?
     
     var showWattInMenu: Bool {
         get { UserDefaults.standard.object(forKey: "showWattInMenu") as? Bool ?? true }
@@ -60,6 +74,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lastPercentage: Double = 0.0
     var lastTimeString: String = "(...)"
     var lastIsCharging: Bool = false
+
+    var selectedEnergyWindow: EnergyDisplayWindow {
+        get { EnergyDisplayWindow(rawValue: UserDefaults.standard.integer(forKey: "energyDisplayWindow")) ?? .instant }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "energyDisplayWindow") }
+    }
+    var smartAlertsEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "smartAlertsEnabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "smartAlertsEnabled") }
+    }
+    var applicationAlertThreshold: Double {
+        get { UserDefaults.standard.object(forKey: "applicationAlertThreshold") as? Double ?? 5.0 }
+        set { UserDefaults.standard.set(newValue, forKey: "applicationAlertThreshold") }
+    }
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         UNUserNotificationCenter.current().delegate = self
@@ -91,21 +118,62 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(NSMenuItem.separator())
 
-        let topAppsTitleItem = NSMenuItem(title: "Son 3 Sn. Uygulama Enerjisi", action: nil, keyEquivalent: "")
+        topAppsTitleItem = NSMenuItem(title: "Son 3 Sn. Uygulama Enerjisi", action: nil, keyEquivalent: "")
         topAppsTitleItem.isEnabled = false
         menu.addItem(topAppsTitleItem)
         
-        topApp1Item = NSMenuItem(title: "1. Ölçüm hazırlanıyor…", action: nil, keyEquivalent: "")
+        topApp1Item = NSMenuItem(title: "1. Ölçüm hazırlanıyor…", action: #selector(openTopApplication), keyEquivalent: "")
+        topApp1Item.target = self
+        topApp1Item.tag = 0
         topApp1Item.isEnabled = false
         menu.addItem(topApp1Item)
         
-        topApp2Item = NSMenuItem(title: "2. --", action: nil, keyEquivalent: "")
+        topApp2Item = NSMenuItem(title: "2. --", action: #selector(openTopApplication), keyEquivalent: "")
+        topApp2Item.target = self
+        topApp2Item.tag = 1
         topApp2Item.isEnabled = false
         menu.addItem(topApp2Item)
         
-        topApp3Item = NSMenuItem(title: "3. --", action: nil, keyEquivalent: "")
+        topApp3Item = NSMenuItem(title: "3. --", action: #selector(openTopApplication), keyEquivalent: "")
+        topApp3Item.target = self
+        topApp3Item.tag = 2
         topApp3Item.isEnabled = false
         menu.addItem(topApp3Item)
+
+        let measurementMenu = NSMenu()
+        for window in EnergyDisplayWindow.allCases {
+            let item = NSMenuItem(title: window.title, action: #selector(changeEnergyWindow), keyEquivalent: "")
+            item.target = self
+            item.tag = window.rawValue
+            measurementMenu.addItem(item)
+            energyWindowItems.append(item)
+        }
+        let measurementItem = NSMenuItem(title: "Ölçüm Aralığı", action: nil, keyEquivalent: "")
+        measurementItem.submenu = measurementMenu
+        menu.addItem(measurementItem)
+
+        let historyItem = NSMenuItem(title: "Enerji Geçmişini Aç", action: #selector(openEnergyDashboard), keyEquivalent: "e")
+        historyItem.target = self
+        menu.addItem(historyItem)
+        let exportItem = NSMenuItem(title: "CSV Dışa Aktar", action: #selector(exportEnergyHistory), keyEquivalent: "")
+        exportItem.target = self
+        menu.addItem(exportItem)
+
+        let alertsMenu = NSMenu()
+        smartAlertsItem = NSMenuItem(title: "Akıllı Uyarılar Açık", action: #selector(toggleSmartAlerts), keyEquivalent: "")
+        smartAlertsItem.target = self
+        alertsMenu.addItem(smartAlertsItem)
+        alertsMenu.addItem(NSMenuItem.separator())
+        for threshold in [3.0, 5.0, 10.0] {
+            let item = NSMenuItem(title: "Uygulama Eşiği: \(Int(threshold)) W", action: #selector(changeAlertThreshold), keyEquivalent: "")
+            item.target = self
+            item.tag = Int(threshold)
+            alertsMenu.addItem(item)
+            alertThresholdItems.append(item)
+        }
+        let alertsItem = NSMenuItem(title: "Akıllı Uyarılar", action: nil, keyEquivalent: "")
+        alertsItem.submenu = alertsMenu
+        menu.addItem(alertsItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -148,6 +216,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         lastUpdateDate = Date()
         
         updateAppearanceMenuState()
+        updateEnergyMenuState()
         updateLoginItemState()
         updateBatteryStatus()
         
@@ -261,10 +330,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    @objc func screenDidSleep() { isScreenOn = false }
+    @objc func screenDidSleep() {
+        isScreenOn = false
+        resetProcessEnergyMeasurement()
+    }
     @objc func screenDidWake() { 
         isScreenOn = true
         lastUpdateDate = Date()
+        resetProcessEnergyMeasurement()
     }
     
     func formatTimeInterval(_ interval: TimeInterval) -> String {
@@ -311,6 +384,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc func closeAllApps() {
+        let alert = NSAlert()
+        alert.messageText = "Tüm uygulamalar kapatılsın mı?"
+        alert.informativeText = "Kaydedilmemiş çalışmalar kaybolabilir. Tek bir uygulamayı kapatmak için Enerji Geçmişi ekranını kullanmanız önerilir."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Vazgeç")
+        alert.addButton(withTitle: "Tümünü Kapat")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
         let apps = NSWorkspace.shared.runningApplications
         let currentApp = NSRunningApplication.current
         for app in apps {
@@ -333,16 +413,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func displayProcessEnergy(_ sample: ProcessEnergySample) {
         switch sample {
         case .warmingUp:
+            latestDisplayedUsages = []
             setTopAppTitles(["1. Ölçüm hazırlanıyor…", "2. --", "3. --"])
+            [topApp1Item, topApp2Item, topApp3Item].forEach { $0?.isEnabled = false }
         case .unavailable:
+            latestDisplayedUsages = []
             setTopAppTitles(["1. Enerji verisi alınamadı", "2. --", "3. --"])
-        case .available(let usages):
-            let titles = (0..<3).map { index in
-                guard index < usages.count else { return "\(index + 1). --" }
-                let usage = usages[index]
-                return "\(index + 1). \(usage.applicationName) (\(formatProcessWatts(usage.watts)))"
-            }
-            setTopAppTitles(titles)
+            [topApp1Item, topApp2Item, topApp3Item].forEach { $0?.isEnabled = false }
+        case .available(let measurement):
+            handleProcessEnergyMeasurement(measurement)
         }
     }
 
@@ -431,6 +510,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let tempRef = IORegistryEntryCreateCFProperty(service, "Temperature" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
                 let celsius = Double(tempRef) / 100.0
+                lastBatteryTemperature = celsius
                 let tempPrefix = "Pil Sıcaklığı: "
                 let tempValue = String(format: "%.1f °C", celsius)
                 
@@ -578,8 +658,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        updateTopAppsBackground()
-
         if isCharging != wasCharging {
             if !isCharging {
                 screenOnTime = 0
@@ -649,6 +727,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         lastTimeString = timeString
         lastIsCharging = isCharging
         refreshStatusBarTitle()
+        updateTopAppsBackground()
 
         if isCharging {
             hasNotifiedLowBattery = false
@@ -738,8 +817,8 @@ class CPUTemperatureReader {
         var tdieTemperatures: [Double] = []
 
         for service in services {
-            if let nameRef = copyProperty(service, "Product" as CFString) {
-                let name = nameRef as! String
+            if let nameRef = copyProperty(service, "Product" as CFString),
+               let name = nameRef as? String {
                 if name.contains("tdie") {
                     if let event = copyEvent(service, 15, 0, 0) {
                         let temp = getFloatValue(event, 983040)

@@ -25,6 +25,38 @@ func aggregatesProcessesByApplication() {
   #expect(result.count == 1)
   #expect(result[0].applicationName == "Ders")
   #expect(abs(result[0].watts - 1.5) < 0.0001)
+  #expect(result[0].processes.count == 2)
+}
+
+@Test("Aynı adlı uygulama farklı bundle yollarında olsa da tek satırda birleşir")
+func mergesSameApplicationNameAcrossBundlePaths() {
+  let first = ProcessIdentity(pid: 12, startTime: 120)
+  let second = ProcessIdentity(pid: 13, startTime: 130)
+  let previous = snapshots([
+    (first, "Ders", 1_000_000_000),
+    (second, "Ders", 1_000_000_000),
+  ])
+  var current = snapshots([
+    (first, "Ders", 2_000_000_000),
+    (second, "Ders", 2_000_000_000),
+  ])
+  let secondSnapshot = current[second]!
+  current[second] = ProcessEnergySnapshot(
+    identity: second,
+    applicationName: secondSnapshot.applicationName,
+    bundlePath: "/Users/ugur/Ders.app",
+    processName: secondSnapshot.processName,
+    energyNanojoules: secondSnapshot.energyNanojoules
+  )
+
+  let result = ApplicationPowerCalculator.calculate(
+    previous: previous,
+    current: current,
+    interval: 2
+  )
+
+  #expect(result.count == 1)
+  #expect(abs(result[0].watts - 1.0) < 0.0001)
 }
 
 @Test("PID yeniden kullanılırsa eski sürecin enerjisi hesaba katılmaz")
@@ -56,7 +88,8 @@ func ignoresRegressedCounter() {
 @Test("Yardımcı süreç dıştaki ana uygulama adıyla gruplanır")
 func resolvesOutermostApplicationBundle() {
   let path = "/Applications/Ders.app/Contents/Frameworks/Ders Helper.app/Contents/MacOS/Ders Helper"
-  #expect(ApplicationNameResolver.applicationName(from: path) == "Ders")
+  #expect(ApplicationNameResolver.application(from: path)?.name == "Ders")
+  #expect(ApplicationNameResolver.application(from: path)?.bundlePath == "/Applications/Ders.app")
 }
 
 @Test("Uygulama yolu olmayan alt süreç üst uygulamaya bağlanır")
@@ -69,7 +102,7 @@ func resolvesApplicationFromParentProcess() {
   let child = ProcessRecord(pid: 41, parentPID: 40, executablePath: "/bin/zsh")
   let records: [Int32: ProcessRecord] = [40: parent, 41: child]
 
-  #expect(ApplicationNameResolver.resolve(for: child, processesByPID: records) == "Terminal")
+  #expect(ApplicationNameResolver.resolve(for: child, processesByPID: records)?.name == "Terminal")
 }
 
 private func snapshots(
@@ -82,6 +115,8 @@ private func snapshots(
         ProcessEnergySnapshot(
           identity: identity,
           applicationName: name,
+          bundlePath: "/Applications/\(name).app",
+          processName: "\(name)-\(identity.pid)",
           energyNanojoules: energy
         )
       )
