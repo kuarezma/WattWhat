@@ -11,6 +11,7 @@ A minimalist and smart macOS menu bar application built with pure Swift that mon
 - **Smart Averages:** Calculates your true average charging speed or power consumption from the moment the power state changes.
 - **Time Remaining:** Shows exactly how much time is left until your battery is fully charged or completely empty, in a clean `(1s 20d)` format.
 - **Battery Temperature:** Monitors the `AppleSmartBattery` sensor to show real-time temperature in °C.
+- **Per-App Energy:** Ranks the three applications with the highest kernel-attributed process energy over the latest 3-second sample. Helper and child processes are grouped under their parent application.
 - **True Battery Health:** Automatically reads and displays the exact official battery health percentage from `system_profiler` to match macOS System Settings perfectly.
 - **Smart Notifications:** Sends elegant macOS system notifications when your battery is fully charged (100%) or drops below 20%.
 - **Launch at Login:** Includes a built-in toggle using native `SMAppService` to automatically start when you turn on your Mac.
@@ -18,6 +19,8 @@ A minimalist and smart macOS menu bar application built with pure Swift that mon
 ## How It Works
 
 WattWhat directly queries the macOS `IOKit` framework and `AppleSmartBattery` registry to read raw hardware sensors like `Voltage` and `Amperage`. It calculates true instantaneous wattage (`Watts = Voltage * Amperage / 1,000,000`) every 3 seconds for extreme accuracy, bypassing the delay often seen in standard system monitors.
+
+Per-app values are measured independently from the battery total. WattWhat samples macOS process resource counters (`ri_energy_nj`) and converts the energy delta into watts. These values represent energy attributed by macOS to application processes; they do not divide total battery wattage by CPU percentage.
 
 ### Installation Methods
 
@@ -41,10 +44,16 @@ Since WattWhat is a single Swift file, it is incredibly easy to compile and run.
 ./build.swift
 ```
 
+Run the core unit tests with:
+
+```bash
+swift test
+```
+
 Alternatively, to compile the app bundle manually:
 
 ```bash
-swiftc WattWhat.swift -o "WattWhat.app/Contents/MacOS/WattWhat"
+swiftc WattWhat.swift Sources/WattWhatCore/ProcessEnergy.swift -o "WattWhat.app/Contents/MacOS/WattWhat"
 ```
 
 ## Requirements
@@ -55,3 +64,7 @@ swiftc WattWhat.swift -o "WattWhat.app/Contents/MacOS/WattWhat"
 ## License
 
 MIT License. Feel free to use, modify, and distribute as you wish!
+
+## Changelog
+
+- **2026-07-07:** Replaced CPU-proportional estimated app wattage with measured process-energy deltas, application-level process grouping, and unit tests.

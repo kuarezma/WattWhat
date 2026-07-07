@@ -24,6 +24,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var showTimeItem: NSMenuItem!
     
     let cpuTempReader = CPUTemperatureReader()
+    let processEnergyMonitor = ProcessEnergyMonitor()
+    let processEnergyQueue = DispatchQueue(label: "com.wattwhat.process-energy", qos: .utility)
     
     var showWattInMenu: Bool {
         get { UserDefaults.standard.object(forKey: "showWattInMenu") as? Bool ?? true }
@@ -88,16 +90,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(screenOnTimeItem)
         
         menu.addItem(NSMenuItem.separator())
+
+        let topAppsTitleItem = NSMenuItem(title: "Son 3 Sn. Uygulama Enerjisi", action: nil, keyEquivalent: "")
+        topAppsTitleItem.isEnabled = false
+        menu.addItem(topAppsTitleItem)
         
-        topApp1Item = NSMenuItem(title: "1. -- (0.0 W)", action: nil, keyEquivalent: "")
+        topApp1Item = NSMenuItem(title: "1. Ölçüm hazırlanıyor…", action: nil, keyEquivalent: "")
         topApp1Item.isEnabled = false
         menu.addItem(topApp1Item)
         
-        topApp2Item = NSMenuItem(title: "2. -- (0.0 W)", action: nil, keyEquivalent: "")
+        topApp2Item = NSMenuItem(title: "2. --", action: nil, keyEquivalent: "")
         topApp2Item.isEnabled = false
         menu.addItem(topApp2Item)
         
-        topApp3Item = NSMenuItem(title: "3. -- (0.0 W)", action: nil, keyEquivalent: "")
+        topApp3Item = NSMenuItem(title: "3. --", action: nil, keyEquivalent: "")
         topApp3Item.isEnabled = false
         menu.addItem(topApp3Item)
         
@@ -314,74 +320,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    func updateTopAppsBackground(totalWatts: Double, isCharging: Bool) {
-        DispatchQueue.global(qos: .background).async {
-            let task = Process()
-            task.launchPath = "/bin/ps"
-            task.arguments = ["-eo", "pcpu,comm", "-r"]
-            
-            let pipe = Pipe()
-            task.standardOutput = pipe
-            
-            do {
-                try task.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let output = String(data: data, encoding: .utf8) {
-                    let lines = output.components(separatedBy: .newlines).dropFirst()
-                    var appTotals: [String: Double] = [:]
-                    var totalCPU: Double = 0.0
-                    
-                    for line in lines {
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        if trimmed.isEmpty { continue }
-                        
-                        let parts = trimmed.split(separator: " ", maxSplits: 1)
-                        if parts.count == 2, let cpu = Double(parts[0]) {
-                            totalCPU += cpu
-                            let comm = String(parts[1])
-                            
-                            if comm.hasPrefix("/System/") || comm.hasPrefix("/sbin/") || comm.hasPrefix("/usr/") || comm.contains("kernel_task") || comm.contains("WindowServer") || comm.contains("WattWhat") || comm.contains("launchd") {
-                                continue
-                            }
-                            
-                            let baseName = (comm as NSString).lastPathComponent
-                            
-                            var appName = baseName
-                            if let range = appName.range(of: " Helper", options: .caseInsensitive) {
-                                appName = String(appName[..<range.lowerBound])
-                            }
-                            appName = appName.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if appName.isEmpty { appName = baseName }
-                            
-                            appTotals[appName, default: 0.0] += cpu
-                        }
-                    }
-                    
-                    let appCPUs = appTotals.map { (name: $0.key, cpu: $0.value) }
-                    let sorted = appCPUs.sorted { $0.cpu > $1.cpu }
-                    let top3 = Array(sorted.prefix(3))
-                    let baseCPU = max(totalCPU, 1.0)
-                    
-                    DispatchQueue.main.async {
-                        // Şarjdayken ölçülen watt pile giren şarj gücüdür, tüketim değil;
-                        // uygulamalara bölmek yanıltıcı olur, o yüzden CPU payını gösteririz.
-                        let label: (Int, (name: String, cpu: Double)) -> String = { idx, app in
-                            if isCharging {
-                                return String(format: "%d. %@ (%%%.1f CPU)", idx, app.name, app.cpu)
-                            } else {
-                                let w = (app.cpu / baseCPU) * totalWatts
-                                return String(format: "%d. %@ (%.1f W)", idx, app.name, w)
-                            }
-                        }
-                        self.topApp1Item.title = top3.count > 0 ? label(1, top3[0]) : "1. -- (0.0 W)"
-                        self.topApp2Item.title = top3.count > 1 ? label(2, top3[1]) : "2. -- (0.0 W)"
-                        self.topApp3Item.title = top3.count > 2 ? label(3, top3[2]) : "3. -- (0.0 W)"
-                    }
-                }
-            } catch {
-                print("Error getting top apps")
+    func updateTopAppsBackground() {
+        processEnergyQueue.async { [weak self] in
+            guard let self else { return }
+            let sample = self.processEnergyMonitor.sample()
+            DispatchQueue.main.async {
+                self.displayProcessEnergy(sample)
             }
         }
+    }
+
+    func displayProcessEnergy(_ sample: ProcessEnergySample) {
+        switch sample {
+        case .warmingUp:
+            setTopAppTitles(["1. Ölçüm hazırlanıyor…", "2. --", "3. --"])
+        case .unavailable:
+            setTopAppTitles(["1. Enerji verisi alınamadı", "2. --", "3. --"])
+        case .available(let usages):
+            let titles = (0..<3).map { index in
+                guard index < usages.count else { return "\(index + 1). --" }
+                let usage = usages[index]
+                return "\(index + 1). \(usage.applicationName) (\(formatProcessWatts(usage.watts)))"
+            }
+            setTopAppTitles(titles)
+        }
+    }
+
+    func setTopAppTitles(_ titles: [String]) {
+        topApp1Item.title = titles[0]
+        topApp2Item.title = titles[1]
+        topApp3Item.title = titles[2]
+    }
+
+    func formatProcessWatts(_ watts: Double) -> String {
+        if watts > 0 && watts < 0.01 { return "<0,01 W" }
+        return String(format: "%.2f W", locale: Locale(identifier: "tr_TR"), watts)
     }
 
     @objc func quitApp() {
@@ -605,7 +578,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        updateTopAppsBackground(totalWatts: watts, isCharging: isCharging)
+        updateTopAppsBackground()
 
         if isCharging != wasCharging {
             if !isCharging {
@@ -796,7 +769,12 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+@main
+struct WattWhatApplication {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.run()
+    }
+}

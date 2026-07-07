@@ -3,3 +3,8 @@
 .DS_Store
 *.dmg
 *.pkg
+.build/
+.swiftpm/
+.env
+.env.*
+!.env.example

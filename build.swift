@@ -21,8 +21,8 @@ print("⚡️ Starting WattWhat Build Process...")
 run("mkdir -p WattWhat.app/Contents/MacOS")
 
 // 2. Compile the Swift file
-print("🛠 Compiling WattWhat.swift...")
-run("swiftc WattWhat.swift -o WattWhat.app/Contents/MacOS/WattWhat")
+print("🛠 Compiling WattWhat sources...")
+run("swiftc WattWhat.swift Sources/WattWhatCore/ProcessEnergy.swift -o WattWhat.app/Contents/MacOS/WattWhat")
 
 // 2b. Write Info.plist — without a bundle identifier UNUserNotificationCenter
 //     throws at launch; LSUIElement keeps it a menu-bar-only agent (no Dock icon).
@@ -97,4 +97,3 @@ run("chmod +x Yukle_WattWhat.command")
 
 print("✅ Build Process Completed Successfully!")
 print("📂 Outputs: WattWhat.app, WattWhat.zip, WattWhat.dmg, WattWhat.pkg, Yukle_WattWhat.command")
-
