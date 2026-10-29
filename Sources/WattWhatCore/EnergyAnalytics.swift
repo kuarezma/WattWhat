@@ -113,20 +113,29 @@ struct EnergyHistoryPoint: Codable, Equatable, Identifiable {
   }
 }
 
-final class EnergyHistoryStore {
+final class EnergyHistoryStore: @unchecked Sendable {
   private(set) var points: [EnergyHistoryPoint] = []
   private let fileURL: URL
   private let retention: TimeInterval
   private let minimumInterval: TimeInterval
+  private let saveInterval: TimeInterval
+  private let maxPoints: Int
+  private var lastSaveDate: Date?
+  private var isDirty = false
+  private let ioQueue = DispatchQueue(label: "com.kuarezma.wattwhat.history-io", qos: .utility)
 
   init(
     fileURL: URL = EnergyHistoryStore.defaultFileURL(),
     retention: TimeInterval = 7 * 24 * 3600,
-    minimumInterval: TimeInterval = 30
+    minimumInterval: TimeInterval = 60,
+    saveInterval: TimeInterval = 0,
+    maxPoints: Int = 2_880
   ) {
     self.fileURL = fileURL
     self.retention = retention
     self.minimumInterval = minimumInterval
+    self.saveInterval = saveInterval
+    self.maxPoints = maxPoints
     load()
   }
 
@@ -135,10 +144,72 @@ final class EnergyHistoryStore {
     if let last = points.last, point.date.timeIntervalSince(last.date) < minimumInterval {
       return false
     }
-    points.append(point)
-    points.removeAll { point.date.timeIntervalSince($0.date) > retention }
-    save()
+    let compacted = Self.compact(point)
+    points.append(compacted)
+    points.removeAll { compacted.date.timeIntervalSince($0.date) > retention }
+    trimExcessPointsIfNeeded()
+    isDirty = true
+
+    if saveInterval <= 0 {
+      saveNow(pointsSnapshot: points)
+      lastSaveDate = compacted.date
+      isDirty = false
+    } else if let lastSaveDate, compacted.date.timeIntervalSince(lastSaveDate) < saveInterval {
+      // Disk yazımını biriktir (coalesce)
+    } else {
+      lastSaveDate = compacted.date
+      isDirty = false
+      let snapshot = points
+      ioQueue.async { [weak self] in
+        self?.saveNow(pointsSnapshot: snapshot)
+      }
+    }
     return true
+  }
+
+  func flush() {
+    guard isDirty else { return }
+    isDirty = false
+    let snapshot = points
+    ioQueue.sync {
+      saveNow(pointsSnapshot: snapshot)
+    }
+  }
+
+  private static func compact(_ point: EnergyHistoryPoint) -> EnergyHistoryPoint {
+    let topApps = point.applications
+      .filter { $0.watts >= 0.01 }
+      .prefix(5)
+      .map {
+        HistoricalApplicationUsage(
+          applicationName: $0.applicationName,
+          watts: ($0.watts * 1000).rounded() / 1000
+        )
+      }
+    return EnergyHistoryPoint(
+      id: point.id,
+      date: Date(timeIntervalSince1970: point.date.timeIntervalSince1970.rounded()),
+      batteryWatts: (point.batteryWatts * 1000).rounded() / 1000,
+      batteryPercentage: (point.batteryPercentage * 10).rounded() / 10,
+      isCharging: point.isCharging,
+      attributedApplicationWatts: (point.attributedApplicationWatts * 1000).rounded() / 1000,
+      coverage: (point.coverage * 1000).rounded() / 1000,
+      applications: Array(topApps)
+    )
+  }
+
+  private func trimExcessPointsIfNeeded() {
+    guard points.count > maxPoints else { return }
+    // Eski yarısını seyrelterek (her 2 noktadan 1'ini tutarak) uzun dönem geçmişi koru
+    let splitIndex = points.count / 2
+    let olderDownsampled = points[..<splitIndex].enumerated().compactMap { index, element in
+      index.isMultiple(of: 2) ? element : nil
+    }
+    let newerSlice = points[splitIndex...]
+    points = olderDownsampled + newerSlice
+    if points.count > maxPoints {
+      points.removeFirst(points.count - maxPoints)
+    }
   }
 
   func csv() -> String {
@@ -174,14 +245,23 @@ final class EnergyHistoryStore {
     guard let data = try? Data(contentsOf: fileURL),
       let decoded = try? JSONDecoder().decode([EnergyHistoryPoint].self, from: data)
     else { return }
-    points = decoded
+    let originalCount = decoded.count
+    let originalByteCount = data.count
+    points = decoded.map { Self.compact($0) }
     if let newest = points.last?.date {
       points.removeAll { newest.timeIntervalSince($0.date) > retention }
     }
+    trimExcessPointsIfNeeded()
+    if points.count < originalCount || originalByteCount > 1_000_000 {
+      let snapshot = points
+      ioQueue.async { [weak self] in
+        self?.saveNow(pointsSnapshot: snapshot)
+      }
+    }
   }
 
-  private func save() {
-    guard let data = try? JSONEncoder().encode(points) else { return }
+  private func saveNow(pointsSnapshot: [EnergyHistoryPoint]) {
+    guard let data = try? JSONEncoder().encode(pointsSnapshot) else { return }
     try? FileManager.default.createDirectory(
       at: fileURL.deletingLastPathComponent(),
       withIntermediateDirectories: true

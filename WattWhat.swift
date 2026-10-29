@@ -4,8 +4,8 @@ import IOKit
 import ServiceManagement
 import UserNotifications
 
-class AppDelegate: NSObject, NSApplicationDelegate {
-    let appVersion = "1.6.0"
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    let appVersion = "1.6.1"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var updateTimer: Timer?
@@ -32,7 +32,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let processEnergyQueue = DispatchQueue(label: "com.wattwhat.process-energy", qos: .utility)
     let applicationPowerTimeline = ApplicationPowerTimeline()
     let smartAlertEvaluator = SmartAlertEvaluator()
-    lazy var energyHistoryStore = EnergyHistoryStore()
+    lazy var energyHistoryStore = EnergyHistoryStore(
+        minimumInterval: 60,
+        saveInterval: 300,
+        maxPoints: 2_880
+    )
     lazy var energyDashboardModel = makeEnergyDashboardModel()
     var energyDashboardWindowController: EnergyDashboardWindowController?
     var latestDisplayedUsages: [ApplicationPowerUsage] = []
@@ -40,6 +44,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var latestAttributedWatts = 0.0
     var latestCoverage = 0.0
     var lastBatteryTemperature: Double?
+    var lastCPUTemperature: Double?
+    var isMenuOpen = false
+    var lastThermalSampleDate: Date = .distantPast
+    var lastStatusBarTitleString: String = ""
+    var lastStatusBarColorState: Int = -1
+    var cachedCycleCount: Int = 0
+    var cachedDesignCapacity: Int = 0
+    var cachedMaxCapacitymAh: Int = 0
+    var cachedHealthPercentage: Double = 0.0
+    var lastPluggedIn: Bool = false
     
     var showWattInMenu: Bool {
         get { UserDefaults.standard.object(forKey: "showWattInMenu") as? Bool ?? true }
@@ -89,12 +103,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.kuarezma.wattwhat"
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        if running.count > 1 {
+            NSApp.terminate(nil)
+            return
+        }
+
         UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         let menu = NSMenu()
+        menu.delegate = self
         
         batteryHealthItem = NSMenuItem(title: "Pil Sağlığı: --", action: #selector(dummyAction), keyEquivalent: "")
         batteryHealthItem.target = self
@@ -436,7 +458,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return String(format: "%.2f W", locale: Locale(identifier: "tr_TR"), watts)
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        energyHistoryStore.flush()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        isMenuOpen = true
+        lastThermalSampleDate = .distantPast
+        updateBatteryStatus()
+        if let snapshot = applicationPowerTimeline.snapshot(window: TimeInterval(selectedEnergyWindow.rawValue)) {
+            renderEnergyMenu(snapshot)
+        }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        isMenuOpen = false
+    }
+
     @objc func quitApp() {
+        energyHistoryStore.flush()
         NSApplication.shared.terminate(self)
     }
     
@@ -483,17 +523,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let title = titleComponents.joined(separator: " ")
+        let colorState: Int
+        if lastIsCharging {
+            colorState = 2 // Aktif şarj
+        } else if lastPluggedIn {
+            colorState = 1 // Adaptörde (dolu / koruma modunda)
+        } else {
+            colorState = 0 // Pilde
+        }
 
         if let button = statusItem.button {
-            let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-            button.attributedTitle = NSAttributedString(string: title, attributes: [.font: font])
+            if title != lastStatusBarTitleString {
+                lastStatusBarTitleString = title
+                let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+                button.attributedTitle = NSAttributedString(string: title, attributes: [.font: font])
+            }
 
-            let config = NSImage.SymbolConfiguration(paletteColors: [lastIsCharging ? NSColor.systemGreen : NSColor.systemYellow])
-            let symbol = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
-            symbol?.isTemplate = false
-            button.image = symbol
-            button.imagePosition = .imageLeft
+            if colorState != lastStatusBarColorState {
+                lastStatusBarColorState = colorState
+                let symbolColor: NSColor
+                switch colorState {
+                case 2: symbolColor = .systemGreen
+                case 1: symbolColor = .systemTeal
+                default: symbolColor = .systemYellow
+                }
+                let config = NSImage.SymbolConfiguration(paletteColors: [symbolColor])
+                let symbol = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
+                symbol?.isTemplate = false
+                button.image = symbol
+                button.imagePosition = .imageLeft
+            }
         }
+    }
+
+    private static func signedInt64Value(_ raw: Any?) -> Int64? {
+        if let number = raw as? NSNumber {
+            return Int64(bitPattern: number.uint64Value)
+        }
+        if let intVal = raw as? Int {
+            return Int64(intVal)
+        }
+        return nil
     }
 
     @objc func updateBatteryStatus() {
@@ -502,32 +572,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         lastUpdateDate = now
         
         var watts: Double = 0.0
+        var isPluggedInSmart = false
+        var isChargingSmart = false
+        let shouldReadThermal = isMenuOpen || now.timeIntervalSince(lastThermalSampleDate) >= 30.0
+        if shouldReadThermal {
+            lastThermalSampleDate = now
+        }
+
         let service = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"))
         if service != 0 {
-            if let voltageRef = IORegistryEntryCreateCFProperty(service, "Voltage" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int,
-               let amperageRef = IORegistryEntryCreateCFProperty(service, "Amperage" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
-                watts = abs(Double(voltageRef) * Double(amperageRef) / 1_000_000.0)
+            defer { IOObjectRelease(service) }
+
+            let voltageRaw = IORegistryEntryCreateCFProperty(service, "Voltage" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+            let amperageRaw = IORegistryEntryCreateCFProperty(service, "Amperage" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+            if let voltage = Self.signedInt64Value(voltageRaw),
+               let amperage = Self.signedInt64Value(amperageRaw),
+               voltage > 0 {
+                watts = abs(Double(voltage) * Double(amperage)) / 1_000_000.0
             }
-            if let tempRef = IORegistryEntryCreateCFProperty(service, "Temperature" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
-                let celsius = Double(tempRef) / 100.0
-                lastBatteryTemperature = celsius
-                let tempPrefix = "Pil Sıcaklığı: "
-                let tempValue = String(format: "%.1f °C", celsius)
-                
-                let menuFont = NSFont.menuFont(ofSize: 0)
-                
-                let attrStr = NSMutableAttributedString(string: tempPrefix, attributes: [
-                    .font: menuFont,
-                    .foregroundColor: NSColor.textColor
-                ])
-                let valAttrStr = NSAttributedString(string: tempValue, attributes: [
-                    .font: menuFont,
-                    .foregroundColor: NSColor.systemOrange
-                ])
-                attrStr.append(valAttrStr)
-                temperatureItem.attributedTitle = attrStr
+
+            if let extConn = IORegistryEntryCreateCFProperty(service, "ExternalConnected" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool {
+                isPluggedInSmart = extConn
             }
-            
+            if let chargingProp = IORegistryEntryCreateCFProperty(service, "IsCharging" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool {
+                isChargingSmart = chargingProp
+            }
+
+            let telemetryDict = IORegistryEntryCreateCFProperty(service, "PowerTelemetryData" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any]
+            if watts < 0.05, let telemetryDict {
+                if let sysLoad = Self.signedInt64Value(telemetryDict["SystemLoad"]), sysLoad > 0, sysLoad < 250_000 {
+                    watts = Double(sysLoad) / 1_000.0
+                } else if let sysPowerIn = Self.signedInt64Value(telemetryDict["SystemPowerIn"]), sysPowerIn > 0, sysPowerIn < 250_000 {
+                    watts = Double(sysPowerIn) / 1_000.0
+                } else if let battPower = Self.signedInt64Value(telemetryDict["BatteryPower"]), battPower != 0, abs(battPower) < 250_000 {
+                    watts = abs(Double(battPower)) / 1_000.0
+                }
+            }
+
+            let batteryDataDict = IORegistryEntryCreateCFProperty(service, "BatteryData" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any]
+
+            if shouldReadThermal {
+                if let tempRef = IORegistryEntryCreateCFProperty(service, "Temperature" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int, tempRef > 0 {
+                    lastBatteryTemperature = Double(tempRef) / 100.0
+                } else {
+                    lastBatteryTemperature = cpuTempReader.readBatteryTemperature()
+                }
+                lastCPUTemperature = cpuTempReader.readCPUTemperature()
+            }
+
             var cycleCount = 0
             var designCapacity = 0
             var maxCapacityFromSmart = 0
@@ -535,99 +627,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let cycleRef = IORegistryEntryCreateCFProperty(service, "CycleCount" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
                 cycleCount = cycleRef
             }
-            if let designRef = IORegistryEntryCreateCFProperty(service, "DesignCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+            if let designRef = IORegistryEntryCreateCFProperty(service, "DesignCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int, designRef > 100 {
                 designCapacity = designRef
+            } else if let bdDesign = batteryDataDict?["DesignCapacity"] as? Int, bdDesign > 100 {
+                designCapacity = bdDesign
             }
             
-            if let appleRawRef = IORegistryEntryCreateCFProperty(service, "AppleRawMaxCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+            if let appleRawRef = IORegistryEntryCreateCFProperty(service, "AppleRawMaxCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int, appleRawRef > 100 {
                 maxCapacityFromSmart = appleRawRef
-            } else if let nominalRef = IORegistryEntryCreateCFProperty(service, "NominalChargeCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
+            } else if let nominalRef = IORegistryEntryCreateCFProperty(service, "NominalChargeCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int, nominalRef > 100 {
                 maxCapacityFromSmart = nominalRef
+            } else if let bdNominal = batteryDataDict?["NominalChargeCapacity"] as? Int, bdNominal > 100 {
+                maxCapacityFromSmart = bdNominal
+            } else if let bdFull = batteryDataDict?["FullChargeCapacity"] as? Int, bdFull > 100 {
+                maxCapacityFromSmart = bdFull
             } else if let maxCapRef = IORegistryEntryCreateCFProperty(service, "MaxCapacity" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int {
                 maxCapacityFromSmart = maxCapRef
             }
-            
+
+            cachedCycleCount = cycleCount
+            cachedDesignCapacity = designCapacity
+            cachedMaxCapacitymAh = maxCapacityFromSmart
             if designCapacity > 0 && maxCapacityFromSmart > 0 {
                 var health = 0.0
                 if let sysHealth = cachedSystemProfilerBatteryHealth {
                     health = sysHealth
                 } else if maxCapacityFromSmart <= 100 && designCapacity > 1000 {
-                    // Fallback if MaxCapacity is just returning percentage
                     health = Double(maxCapacityFromSmart)
                 } else {
                     health = (Double(maxCapacityFromSmart) / Double(designCapacity)) * 100.0
                 }
-                
-                // Cap health at 100% just in case
-                health = min(health, 100.0)
-                
-                let healthPrefix = "Pil Sağlığı: "
-                // maxCapacityFromSmart <= 100 ise değer mAh değil yüzdedir; "mAh" etiketini gösterme.
-                let healthValue: String
-                if maxCapacityFromSmart > 100 {
-                    healthValue = String(format: "%%%.0f (%d mAh Kaldı, %d Devir)", health, maxCapacityFromSmart, cycleCount)
-                } else {
-                    healthValue = String(format: "%%%.0f (%d Devir)", health, cycleCount)
-                }
-                
-                let menuFont = NSFont.menuFont(ofSize: 0)
-                
-                let attrStr = NSMutableAttributedString(string: healthPrefix, attributes: [
-                    .font: menuFont,
-                    .foregroundColor: NSColor.textColor
-                ])
-                let valAttrStr = NSAttributedString(string: healthValue, attributes: [
-                    .font: menuFont,
-                    .foregroundColor: (health >= 80) ? NSColor.systemGreen : NSColor.systemRed
-                ])
-                attrStr.append(valAttrStr)
-                batteryHealthItem.attributedTitle = attrStr
-            } else {
-                batteryHealthItem.title = "Pil Sağlığı: Hesaplanamıyor"
+                cachedHealthPercentage = min(health, 100.0)
             }
-            
-            IOObjectRelease(service)
         }
         
-        if let cpuTemp = cpuTempReader.readCPUTemperature() {
-            let cpuPrefix = "İşlemci Sıcaklığı: "
-            let remaining = max(100.0 - cpuTemp, 0.0)
-            let cpuValue = String(format: "%.1f °C", cpuTemp)
-            let remainingValue = String(format: " (Throttling'e %.1f °C)", remaining)
-            let menuFont = NSFont.menuFont(ofSize: 0)
-            
-            let attrStr = NSMutableAttributedString(string: cpuPrefix, attributes: [
-                .font: menuFont,
-                .foregroundColor: NSColor.textColor
-            ])
-            
-            let tempColor: NSColor
-            if cpuTemp >= 75.0 {
-                tempColor = NSColor.systemRed
-            } else if cpuTemp >= 55.0 {
-                tempColor = NSColor.systemOrange
-            } else {
-                tempColor = NSColor.systemBlue
-            }
-            
-            let valAttrStr = NSAttributedString(string: cpuValue, attributes: [
-                .font: menuFont,
-                .foregroundColor: tempColor
-            ])
-            attrStr.append(valAttrStr)
-            
-            let remainingAttrStr = NSAttributedString(string: remainingValue, attributes: [
-                .font: menuFont,
-                .foregroundColor: NSColor.secondaryLabelColor
-            ])
-            attrStr.append(remainingAttrStr)
-            
-            cpuTemperatureItem.attributedTitle = attrStr
-        } else {
-            cpuTemperatureItem.title = "İşlemci Sıcaklığı: -- °C"
-        }
-        
-        var isCharging = false
+        var isPluggedIn = isPluggedInSmart
+        var isCharging = isChargingSmart
         var timeRemaining: Int = 0
         var isFullyCharged = false
         var percentage: Double = 0.0
@@ -641,7 +676,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if type != kIOPSInternalBatteryType { continue }
                 
                 let state = info[kIOPSPowerSourceStateKey] as? String ?? ""
-                isCharging = (state == kIOPSACPowerValue)
+                isPluggedIn = (state == kIOPSACPowerValue) || isPluggedInSmart
+                if let iopsCharging = info[kIOPSIsChargingKey] as? Bool {
+                    isCharging = iopsCharging
+                }
                 isFullyCharged = (info[kIOPSIsChargedKey] as? Bool) ?? false
                 
                 let currentCapacity = info[kIOPSCurrentCapacityKey] as? Int ?? 0
@@ -652,64 +690,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 
                 if isCharging {
                     timeRemaining = info[kIOPSTimeToFullChargeKey] as? Int ?? 0
-                } else {
+                } else if !isPluggedIn {
                     timeRemaining = info[kIOPSTimeToEmptyKey] as? Int ?? 0
                 }
             }
         }
         
-        if isCharging != wasCharging {
-            if !isCharging {
+        if isPluggedIn != wasCharging {
+            if !isPluggedIn {
                 screenOnTime = 0
             }
             totalWatts = 0.0
             wattSamplesCount = 0
-            wasCharging = isCharging
+            wasCharging = isPluggedIn
         }
         
-        totalWatts += watts
-        wattSamplesCount += 1
-        let avg = totalWatts / Double(wattSamplesCount)
+        if watts > 0.01 {
+            totalWatts += watts
+            wattSamplesCount += 1
+        }
+        let avg = wattSamplesCount > 0 ? (totalWatts / Double(wattSamplesCount)) : watts
         
-        let avgPrefix = isCharging ? "Ortalama Şarj: " : "Ortalama Tüketim: "
-        let avgValue = String(format: "%.1f W", avg)
-        
-        let menuFont = NSFont.menuFont(ofSize: 0)
-        
-        let avgAttrStr = NSMutableAttributedString(string: avgPrefix, attributes: [
-            .font: menuFont,
-            .foregroundColor: NSColor.textColor
-        ])
-        let avgValAttrStr = NSAttributedString(string: avgValue, attributes: [
-            .font: menuFont,
-            .foregroundColor: NSColor.systemCyan
-        ])
-        avgAttrStr.append(avgValAttrStr)
-        averageWattageItem.attributedTitle = avgAttrStr
-        
-        if !isCharging && isScreenOn {
+        if !isPluggedIn && isScreenOn {
             if delta > 0 && delta < 10 { // Max 10 sec delta to ignore sleep gaps
                 screenOnTime += delta
             }
         }
         
-        let screenOnPrefix = "Ekran Süresi: "
-        let screenOnValue = formatTimeInterval(screenOnTime)
-        
-        let screenOnAttrStr = NSMutableAttributedString(string: screenOnPrefix, attributes: [
-            .font: menuFont,
-            .foregroundColor: NSColor.textColor
-        ])
-        let screenOnValAttrStr = NSAttributedString(string: screenOnValue, attributes: [
-            .font: menuFont,
-            .foregroundColor: NSColor.systemGreen
-        ])
-        screenOnAttrStr.append(screenOnValAttrStr)
-        screenOnTimeItem.attributedTitle = screenOnAttrStr
-        
         var timeString = ""
-        if isFullyCharged {
-            timeString = "(Dolu)"
+        if isFullyCharged || (isPluggedIn && !isCharging) {
+            timeString = isFullyCharged ? "(Dolu)" : "(Fişte)"
         } else if timeRemaining > 0 && timeRemaining < 6000 {
             let hours = timeRemaining / 60
             let minutes = timeRemaining % 60
@@ -726,10 +736,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         lastPercentage = percentage
         lastTimeString = timeString
         lastIsCharging = isCharging
+        lastPluggedIn = isPluggedIn
+
+        if isMenuOpen {
+            updateDetailedMenuItems(avgWatts: avg, isPluggedIn: isPluggedIn, isCharging: isCharging)
+        }
+
         refreshStatusBarTitle()
         updateTopAppsBackground()
 
-        if isCharging {
+        if isPluggedIn {
             hasNotifiedLowBattery = false
             if isFullyCharged && !hasNotifiedFullCharge {
                 sendNotification(title: "Pil Tamamen Doldu ⚡️", body: "Pil %100 oldu, bilgisayarınızı şarjdan çekebilirsiniz.")
@@ -750,6 +766,108 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    private func updateDetailedMenuItems(avgWatts: Double, isPluggedIn: Bool, isCharging: Bool) {
+        let menuFont = NSFont.menuFont(ofSize: 0)
+
+        if let celsius = lastBatteryTemperature {
+            let tempPrefix = "Pil Sıcaklığı: "
+            let tempValue = String(format: "%.1f °C", celsius)
+            let attrStr = NSMutableAttributedString(string: tempPrefix, attributes: [
+                .font: menuFont,
+                .foregroundColor: NSColor.textColor
+            ])
+            attrStr.append(NSAttributedString(string: tempValue, attributes: [
+                .font: menuFont,
+                .foregroundColor: NSColor.systemOrange
+            ]))
+            temperatureItem.attributedTitle = attrStr
+        } else {
+            temperatureItem.title = "Pil Sıcaklığı: -- °C"
+        }
+
+        if cachedDesignCapacity > 0 && cachedMaxCapacitymAh > 0 {
+            let healthPrefix = "Pil Sağlığı: "
+            let healthValue: String
+            if cachedMaxCapacitymAh > 100 {
+                healthValue = String(format: "%%%.0f (%d mAh Kaldı, %d Devir)", cachedHealthPercentage, cachedMaxCapacitymAh, cachedCycleCount)
+            } else {
+                healthValue = String(format: "%%%.0f (%d Devir)", cachedHealthPercentage, cachedCycleCount)
+            }
+            let attrStr = NSMutableAttributedString(string: healthPrefix, attributes: [
+                .font: menuFont,
+                .foregroundColor: NSColor.textColor
+            ])
+            attrStr.append(NSAttributedString(string: healthValue, attributes: [
+                .font: menuFont,
+                .foregroundColor: (cachedHealthPercentage >= 80) ? NSColor.systemGreen : NSColor.systemRed
+            ]))
+            batteryHealthItem.attributedTitle = attrStr
+        } else {
+            batteryHealthItem.title = "Pil Sağlığı: Hesaplanamıyor"
+        }
+
+        if let cpuTemp = lastCPUTemperature {
+            let cpuPrefix = "İşlemci Sıcaklığı: "
+            let remaining = max(100.0 - cpuTemp, 0.0)
+            let cpuValue = String(format: "%.1f °C", cpuTemp)
+            let remainingValue = String(format: " (Throttling'e %.1f °C)", remaining)
+            let attrStr = NSMutableAttributedString(string: cpuPrefix, attributes: [
+                .font: menuFont,
+                .foregroundColor: NSColor.textColor
+            ])
+            let tempColor: NSColor
+            if cpuTemp >= 75.0 {
+                tempColor = .systemRed
+            } else if cpuTemp >= 55.0 {
+                tempColor = .systemOrange
+            } else {
+                tempColor = .systemBlue
+            }
+            attrStr.append(NSAttributedString(string: cpuValue, attributes: [
+                .font: menuFont,
+                .foregroundColor: tempColor
+            ]))
+            attrStr.append(NSAttributedString(string: remainingValue, attributes: [
+                .font: menuFont,
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]))
+            cpuTemperatureItem.attributedTitle = attrStr
+        } else {
+            cpuTemperatureItem.title = "İşlemci Sıcaklığı: -- °C"
+        }
+
+        let avgPrefix: String
+        if isCharging {
+            avgPrefix = "Ortalama Şarj: "
+        } else if isPluggedIn {
+            avgPrefix = "Ortalama Adaptör: "
+        } else {
+            avgPrefix = "Ortalama Tüketim: "
+        }
+        let avgValue = String(format: "%.1f W", avgWatts)
+        let avgAttrStr = NSMutableAttributedString(string: avgPrefix, attributes: [
+            .font: menuFont,
+            .foregroundColor: NSColor.textColor
+        ])
+        avgAttrStr.append(NSAttributedString(string: avgValue, attributes: [
+            .font: menuFont,
+            .foregroundColor: NSColor.systemCyan
+        ]))
+        averageWattageItem.attributedTitle = avgAttrStr
+
+        let screenOnPrefix = "Ekran Süresi: "
+        let screenOnValue = formatTimeInterval(screenOnTime)
+        let screenOnAttrStr = NSMutableAttributedString(string: screenOnPrefix, attributes: [
+            .font: menuFont,
+            .foregroundColor: NSColor.textColor
+        ])
+        screenOnAttrStr.append(NSAttributedString(string: screenOnValue, attributes: [
+            .font: menuFont,
+            .foregroundColor: NSColor.systemGreen
+        ]))
+        screenOnTimeItem.attributedTitle = screenOnAttrStr
+    }
 }
 
 class CPUTemperatureReader {
@@ -769,6 +887,8 @@ class CPUTemperatureReader {
     private var serviceClientCopyEvent: IOHIDServiceClientCopyEvent?
     private var eventGetFloatValue: IOHIDEventGetFloatValue?
     private var serviceClientCopyProperty: IOHIDServiceClientCopyProperty?
+    private var cachedTDieServices: [IOHIDServiceClient]?
+    private var cachedBatteryServices: [IOHIDServiceClient]?
 
     init() {
         guard let handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW) else { return }
@@ -801,40 +921,75 @@ class CPUTemperatureReader {
         }
     }
 
-    func readCPUTemperature() -> Double? {
-        guard let client = client,
+    private func populateSensorCachesIfNeeded() {
+        guard cachedTDieServices == nil || cachedBatteryServices == nil,
+              let client = client,
               let copyServices = eventSystemClientCopyServices,
-              let copyEvent = serviceClientCopyEvent,
-              let getFloatValue = eventGetFloatValue,
-              let copyProperty = serviceClientCopyProperty else {
-            return nil
+              let copyProperty = serviceClientCopyProperty,
+              let services = copyServices(client) as? [IOHIDServiceClient] else {
+            return
         }
-
-        guard let services = copyServices(client) as? [IOHIDServiceClient] else {
-            return nil
-        }
-
-        var tdieTemperatures: [Double] = []
-
+        var tdie: [IOHIDServiceClient] = []
+        var battery: [IOHIDServiceClient] = []
         for service in services {
             if let nameRef = copyProperty(service, "Product" as CFString),
                let name = nameRef as? String {
-                if name.contains("tdie") {
-                    if let event = copyEvent(service, 15, 0, 0) {
-                        let temp = getFloatValue(event, 983040)
-                        if temp > 0 && temp < 150 {
-                            tdieTemperatures.append(temp)
-                        }
+                let lower = name.lowercased()
+                if lower.contains("tdie") {
+                    tdie.append(service)
+                } else if lower.contains("gas gauge battery") || lower.contains("batt") {
+                    battery.append(service)
+                }
+            }
+        }
+        cachedTDieServices = tdie
+        cachedBatteryServices = battery
+    }
+
+    func readCPUTemperature() -> Double? {
+        populateSensorCachesIfNeeded()
+        guard let services = cachedTDieServices,
+              let copyEvent = serviceClientCopyEvent,
+              let getFloatValue = eventGetFloatValue else {
+            return nil
+        }
+
+        var maxTemp: Double?
+        for service in services {
+            if let event = copyEvent(service, 15, 0, 0) {
+                let temp = getFloatValue(event, 983040)
+                if temp > 0 && temp < 150 {
+                    if let current = maxTemp {
+                        if temp > current { maxTemp = temp }
+                    } else {
+                        maxTemp = temp
                     }
                 }
             }
         }
+        return maxTemp
+    }
 
-        if tdieTemperatures.isEmpty {
+    func readBatteryTemperature() -> Double? {
+        populateSensorCachesIfNeeded()
+        guard let services = cachedBatteryServices,
+              let copyEvent = serviceClientCopyEvent,
+              let getFloatValue = eventGetFloatValue else {
             return nil
         }
-        
-        return tdieTemperatures.max()
+
+        var sum = 0.0
+        var count = 0
+        for service in services {
+            if let event = copyEvent(service, 15, 0, 0) {
+                let temp = getFloatValue(event, 983040)
+                if temp > 5 && temp < 100 {
+                    sum += temp
+                    count += 1
+                }
+            }
+        }
+        return count > 0 ? (sum / Double(count)) : nil
     }
 }
 

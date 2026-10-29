@@ -156,10 +156,12 @@ enum ApplicationNameResolver {
 final class ProcessEnergyMonitor {
   private var previousSnapshots: [ProcessIdentity: ProcessEnergySnapshot]?
   private var previousSampleDate: Date?
+  private var pathCache: [Int32: String] = [:]
 
   func reset() {
     previousSnapshots = nil
     previousSampleDate = nil
+    pathCache.removeAll()
   }
 
   func sample(at now: Date = Date()) -> ProcessEnergySample {
@@ -220,33 +222,81 @@ final class ProcessEnergyMonitor {
   }
 
   private func runningProcesses() -> [ProcessRecord] {
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/bin/ps")
-    task.arguments = ["-axo", "pid=,ppid=,comm="]
-    let pipe = Pipe()
-    task.standardOutput = pipe
-    task.standardError = FileHandle.nullDevice
+    let estimatedCount = proc_listallpids(nil, 0)
+    guard estimatedCount > 0 else { return [] }
 
-    do {
-      try task.run()
-      let data = pipe.fileHandleForReading.readDataToEndOfFile()
-      task.waitUntilExit()
-      guard task.terminationStatus == 0,
-        let output = String(data: data, encoding: .utf8)
-      else { return [] }
-      return output.split(separator: "\n").compactMap { line in
-        let fields = line.split(maxSplits: 2, whereSeparator: { $0.isWhitespace })
-        guard fields.count == 3,
-          let pid = Int32(fields[0]),
-          let parentPID = Int32(fields[1])
-        else { return nil }
-        return ProcessRecord(
-          pid: pid,
-          parentPID: parentPID,
-          executablePath: String(fields[2])
+    let capacity = Int(estimatedCount) + 64
+    var pids = [Int32](repeating: 0, count: capacity)
+    let bytesReturned = pids.withUnsafeMutableBufferPointer { buffer -> Int32 in
+      guard let baseAddress = buffer.baseAddress else { return 0 }
+      return proc_listallpids(
+        baseAddress, Int32(buffer.count * MemoryLayout<Int32>.stride))
+    }
+    guard bytesReturned > 0 else { return [] }
+
+    let count = min(capacity, Int(bytesReturned))
+    var activePIDs = Set<Int32>()
+    activePIDs.reserveCapacity(count)
+    var records: [ProcessRecord] = []
+    records.reserveCapacity(count)
+
+    var bsdInfo = proc_bsdshortinfo()
+    let bsdInfoSize = Int32(MemoryLayout<proc_bsdshortinfo>.stride)
+    var pathBuffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN) * 4)
+
+    for index in 0..<count {
+      let pid = pids[index]
+      guard pid > 0 else { continue }
+      activePIDs.insert(pid)
+
+      let infoBytes = withUnsafeMutablePointer(to: &bsdInfo) { pointer in
+        proc_pidinfo(
+          pid,
+          PROC_PIDT_SHORTBSDINFO,
+          0,
+          pointer,
+          bsdInfoSize
         )
       }
-    } catch { return [] }
+      guard infoBytes == bsdInfoSize else { continue }
+      let parentPID = Int32(bsdInfo.pbsi_ppid)
+
+      let executablePath: String
+      if let cached = pathCache[pid] {
+        executablePath = cached
+      } else {
+        let pathLen = pathBuffer.withUnsafeMutableBufferPointer { buffer -> Int32 in
+          guard let base = buffer.baseAddress else { return 0 }
+          return proc_pidpath(pid, base, UInt32(buffer.count))
+        }
+        if pathLen > 0 {
+          let resolved = String(decoding: pathBuffer.prefix(Int(pathLen)), as: UTF8.self)
+          pathCache[pid] = resolved
+          executablePath = resolved
+        } else {
+          let commName = withUnsafePointer(to: bsdInfo.pbsi_comm) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN)) {
+              String(cString: $0)
+            }
+          }
+          guard !commName.isEmpty else { continue }
+          executablePath = commName
+        }
+      }
+
+      records.append(
+        ProcessRecord(
+          pid: pid,
+          parentPID: parentPID,
+          executablePath: executablePath
+        )
+      )
+    }
+
+    if pathCache.count > activePIDs.count + 128 {
+      pathCache = pathCache.filter { activePIDs.contains($0.key) }
+    }
+    return records
   }
 
   private func resourceUsage(for pid: Int32) -> (startTime: UInt64, energyNanojoules: UInt64)? {

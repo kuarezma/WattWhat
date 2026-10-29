@@ -28,7 +28,9 @@ extension AppDelegate {
     latestDisplayedUsages = Array(snapshot.usages.prefix(3))
     latestAttributedWatts = snapshot.attributedTotalWatts
     latestCoverage = snapshot.coverage
-    renderEnergyMenu(snapshot)
+    if isMenuOpen {
+      renderEnergyMenu(snapshot)
+    }
     let instantSnapshot = SmoothedEnergySnapshot(
       usages: measurement.usages,
       attributedTotalWatts: measurement.attributedTotalWatts,
@@ -36,7 +38,9 @@ extension AppDelegate {
       sampleCount: 1
     )
     recordEnergyHistory(instantSnapshot, at: now)
-    updateDashboard(snapshot)
+    if energyDashboardWindowController?.window?.isVisible == true {
+      updateDashboard(snapshot)
+    }
     evaluateSmartAlerts(instantSnapshot, at: now)
   }
 
@@ -195,6 +199,14 @@ extension AppDelegate {
   @objc func openEnergyDashboard() {
     if energyDashboardWindowController == nil {
       energyDashboardWindowController = EnergyDashboardWindowController(model: energyDashboardModel)
+    }
+    if let snapshot = applicationPowerTimeline.snapshot(
+      window: TimeInterval(selectedEnergyWindow.rawValue))
+    {
+      updateDashboard(snapshot)
+    } else {
+      energyDashboardModel.history = energyHistoryStore.points
+      energyDashboardModel.currentBatteryWatts = lastWatts
     }
     energyDashboardWindowController?.present()
   }

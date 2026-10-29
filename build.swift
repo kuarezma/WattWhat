@@ -22,11 +22,11 @@ run("mkdir -p WattWhat.app/Contents/MacOS")
 
 // 2. Compile the Swift file
 print("🛠 Compiling WattWhat sources...")
-run("swiftc WattWhat.swift Sources/WattWhatCore/*.swift Sources/WattWhatUI/*.swift -o WattWhat.app/Contents/MacOS/WattWhat")
+run("swiftc -O WattWhat.swift Sources/WattWhatCore/*.swift Sources/WattWhatUI/*.swift -o WattWhat.app/Contents/MacOS/WattWhat")
 
 // 2b. Write Info.plist — without a bundle identifier UNUserNotificationCenter
 //     throws at launch; LSUIElement keeps it a menu-bar-only agent (no Dock icon).
-let appVersion = "1.6.0"
+let appVersion = "1.6.1"
 let infoPlist = """
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
