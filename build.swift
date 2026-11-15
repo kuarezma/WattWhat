@@ -15,18 +15,31 @@ func run(_ command: String) {
     }
 }
 
-print("⚡️ Starting WattWhat Build Process...")
+print("⚡️ Starting WattWhat v2.0 Build Process...")
 
 // 1. Ensure the App bundle structure exists
-run("mkdir -p WattWhat.app/Contents/MacOS")
+run("mkdir -p WattWhat.app/Contents/MacOS WattWhat.app/Contents/Resources")
 
-// 2. Compile the Swift file
-print("🛠 Compiling WattWhat sources...")
+// 2. Compile the main WattWhat menu bar app
+print("🛠 Compiling WattWhat app...")
 run("swiftc -O WattWhat.swift Sources/WattWhatCore/*.swift Sources/WattWhatUI/*.swift -o WattWhat.app/Contents/MacOS/WattWhat")
 
-// 2b. Write Info.plist — without a bundle identifier UNUserNotificationCenter
+// 3. Compile the privileged SMC power helper daemon
+print("🛠 Compiling wattwhat-helper...")
+run("swiftc -O Sources/WattWhatCore/*.swift Sources/WattWhatHelper/main.swift -o WattWhat.app/Contents/MacOS/wattwhat-helper")
+
+// 4. Compile the wattctl CLI tool
+print("🛠 Compiling wattctl CLI...")
+run("swiftc -O Sources/WattWhatCore/*.swift Sources/WattWhatCLI/main.swift -o WattWhat.app/Contents/MacOS/wattctl")
+
+// 5. Copy AppIcon if present
+if FileManager.default.fileExists(atPath: "Assets/AppIcon.icns") {
+    run("cp -f Assets/AppIcon.icns WattWhat.app/Contents/Resources/AppIcon.icns")
+}
+
+// 6. Write Info.plist — without a bundle identifier UNUserNotificationCenter
 //     throws at launch; LSUIElement keeps it a menu-bar-only agent (no Dock icon).
-let appVersion = "1.6.1"
+let appVersion = "2.0.0"
 let infoPlist = """
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -40,6 +53,8 @@ let infoPlist = """
     <string>WattWhat</string>
     <key>CFBundleIdentifier</key>
     <string>com.kuarezma.wattwhat</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -57,19 +72,19 @@ let infoPlist = """
 """
 try? infoPlist.write(to: URL(fileURLWithPath: "WattWhat.app/Contents/Info.plist"), atomically: true, encoding: .utf8)
 
-// 3. Codesign the app to prevent some Gatekeeper errors
+// 7. Codesign the app to prevent Gatekeeper errors
 print("✍️ Codesigning the App...")
 run("codesign --force --deep -s - WattWhat.app")
 
-// 4. Create a ZIP archive
+// 8. Create a ZIP archive
 print("📦 Creating ZIP archive...")
-run("zip -r WattWhat.zip WattWhat.app")
+run("rm -f WattWhat.zip && zip -rq WattWhat.zip WattWhat.app")
 
-// 5. Create a PKG installer
+// 9. Create a PKG installer
 print("📦 Creating PKG installer...")
-run("pkgbuild --root WattWhat.app --identifier com.kuarezma.wattwhat --version 1.6.0 --install-location /Applications/WattWhat.app WattWhat.pkg")
+run("pkgbuild --root WattWhat.app --identifier com.kuarezma.wattwhat --version \(appVersion) --install-location /Applications/WattWhat.app WattWhat.pkg")
 
-// 6. Create a DMG disk image
+// 10. Create a DMG disk image
 print("💿 Creating DMG disk image...")
 run("rm -rf DMGStaging WattWhat.dmg")
 run("mkdir -p DMGStaging")
@@ -78,7 +93,7 @@ run("ln -s /Applications DMGStaging/Applications")
 run("hdiutil create -volname 'WattWhat' -srcfolder DMGStaging -ov -format UDZO WattWhat.dmg")
 run("rm -rf DMGStaging")
 
-// 7. Create Install Command script
+// 11. Create Install Command script
 print("📜 Creating Install Script...")
 let installScript = """
 #!/bin/bash
@@ -96,4 +111,4 @@ try? installScript.write(to: scriptURL, atomically: true, encoding: .utf8)
 run("chmod +x Yukle_WattWhat.command")
 
 print("✅ Build Process Completed Successfully!")
-print("📂 Outputs: WattWhat.app, WattWhat.zip, WattWhat.dmg, WattWhat.pkg, Yukle_WattWhat.command")
+print("📂 Outputs: WattWhat.app (+ wattwhat-helper, wattctl), WattWhat.zip, WattWhat.dmg, WattWhat.pkg, Yukle_WattWhat.command")

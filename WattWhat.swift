@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    let appVersion = "1.6.1"
+    let appVersion = "2.0.0"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var updateTimer: Timer?
@@ -26,6 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var showWattItem: NSMenuItem!
     var showPercentageItem: NSMenuItem!
     var showTimeItem: NSMenuItem!
+    var showTargetWattItem: NSMenuItem!
     
     let cpuTempReader = CPUTemperatureReader()
     let processEnergyMonitor = ProcessEnergyMonitor()
@@ -38,6 +39,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         maxPoints: 2_880
     )
     lazy var energyDashboardModel = makeEnergyDashboardModel()
+    lazy var powerStudioModel = makePowerStudioModel()
+    var chargeControlConfig: ChargeControlConfig = LocalConfigStore.load()
+    var lastHelperResponse: HelperResponse?
+    let helperIPCQueue = DispatchQueue(label: "com.kuarezma.wattwhat.helper-ipc", qos: .userInitiated)
+    var powerSummaryMenuItem: NSMenuItem!
+    var powerHelperActionItem: NSMenuItem!
+    var chargeModeMenuItem: NSMenuItem!
+    var chargeModeSubmenuItems: [NSMenuItem] = []
+    var chargeLimitSubmenuItems: [NSMenuItem] = []
+    var magSafeLEDSubmenuItems: [NSMenuItem] = []
+    var topUpMenuItem: NSMenuItem!
     var energyDashboardWindowController: EnergyDashboardWindowController?
     var latestDisplayedUsages: [ApplicationPowerUsage] = []
     var latestAllUsages: [ApplicationPowerUsage] = []
@@ -66,6 +78,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var showTimeInMenu: Bool {
         get { UserDefaults.standard.object(forKey: "showTimeInMenu") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "showTimeInMenu") }
+    }
+    var showTargetWattInMenu: Bool {
+        get { UserDefaults.standard.object(forKey: "showTargetWattInMenu") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "showTargetWattInMenu") }
     }
     
     var screenOnTime: TimeInterval {
@@ -140,6 +156,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
 
+        setupChargeControlMenuItems(into: menu)
+
         topAppsTitleItem = NSMenuItem(title: "Son 3 Sn. Uygulama Enerjisi", action: nil, keyEquivalent: "")
         topAppsTitleItem.isEnabled = false
         menu.addItem(topAppsTitleItem)
@@ -213,9 +231,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showWattItem = NSMenuItem(title: "Watt Göster", action: #selector(toggleShowWatt), keyEquivalent: "")
         showPercentageItem = NSMenuItem(title: "Yüzde Göster", action: #selector(toggleShowPercentage), keyEquivalent: "")
         showTimeItem = NSMenuItem(title: "Süre Göster", action: #selector(toggleShowTime), keyEquivalent: "")
+        showTargetWattItem = NSMenuItem(title: "Hedef Watt'ı Göster", action: #selector(toggleShowTargetInMenu), keyEquivalent: "")
         appearanceMenu.addItem(showWattItem)
         appearanceMenu.addItem(showPercentageItem)
         appearanceMenu.addItem(showTimeItem)
+        appearanceMenu.addItem(showTargetWattItem)
         
         let appearanceMenuItem = NSMenuItem(title: "Görünüm Seçenekleri", action: nil, keyEquivalent: "")
         appearanceMenuItem.submenu = appearanceMenu
@@ -239,8 +259,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         updateAppearanceMenuState()
         updateEnergyMenuState()
+        updatePowerControlMenuState()
         updateLoginItemState()
         updateBatteryStatus()
+        refreshPowerControlStateBackground(forceProbe: true)
         
         checkForUpdatesAndHealth()
         
@@ -397,6 +419,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showWattItem.state = showWattInMenu ? .on : .off
         showPercentageItem.state = showPercentageInMenu ? .on : .off
         showTimeItem.state = showTimeInMenu ? .on : .off
+        showTargetWattItem?.state = showTargetWattInMenu ? .on : .off
     }
     
     @objc func openBatterySettings() {
@@ -466,6 +489,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isMenuOpen = true
         lastThermalSampleDate = .distantPast
         updateBatteryStatus()
+        refreshPowerControlStateBackground(forceProbe: true)
         if let snapshot = applicationPowerTimeline.snapshot(window: TimeInterval(selectedEnergyWindow.rawValue)) {
             renderEnergyMenu(snapshot)
         }
@@ -510,7 +534,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     
     func refreshStatusBarTitle() {
-        let wattString = String(format: "%.1fW", lastWatts)
+        let wattString: String
+        if showTargetWattInMenu && lastPluggedIn {
+            switch chargeControlConfig.mode {
+            case .automatic:
+                wattString = String(format: "%.1fW", lastWatts)
+            case .manualWatts:
+                let target = lastHelperResponse?.appliedTargetWatts ?? chargeControlConfig.targetWatts
+                wattString = String(format: "%.1fW/%dW", lastWatts, target)
+            case .passthroughHold:
+                wattString = String(format: "%.1fW/0W", lastWatts)
+            case .forceDischarge:
+                wattString = String(format: "%.1fW(↓%%%d)", lastWatts, chargeControlConfig.dischargeTargetPercent)
+            }
+        } else {
+            wattString = String(format: "%.1fW", lastWatts)
+        }
         var titleComponents: [String] = []
         if showWattInMenu {
             titleComponents.append(wattString)
@@ -524,7 +563,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let title = titleComponents.joined(separator: " ")
         let colorState: Int
-        if lastIsCharging {
+        if lastPluggedIn && chargeControlConfig.mode == .manualWatts {
+            colorState = 3 // Manuel Watt Limiti aktif
+        } else if lastIsCharging {
             colorState = 2 // Aktif şarj
         } else if lastPluggedIn {
             colorState = 1 // Adaptörde (dolu / koruma modunda)
@@ -543,6 +584,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 lastStatusBarColorState = colorState
                 let symbolColor: NSColor
                 switch colorState {
+                case 3: symbolColor = .systemCyan
                 case 2: symbolColor = .systemGreen
                 case 1: symbolColor = .systemTeal
                 default: symbolColor = .systemYellow
@@ -697,12 +739,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         
         if isPluggedIn != wasCharging {
+            let prevPlugged = wasCharging
             if !isPluggedIn {
                 screenOnTime = 0
             }
             totalWatts = 0.0
             wattSamplesCount = 0
             wasCharging = isPluggedIn
+            if !prevPlugged && isPluggedIn {
+                let adapterRating = PowerTelemetryReader.read(now: now).adapterRatingWatts
+                handlePlugInTransition(
+                    wasPluggedIn: prevPlugged,
+                    nowPluggedIn: isPluggedIn,
+                    adapterRatingWatts: adapterRating
+                )
+            }
         }
         
         if watts > 0.01 {
@@ -744,6 +795,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         refreshStatusBarTitle()
         updateTopAppsBackground()
+        refreshPowerControlStateBackground(forceProbe: false)
 
         if isPluggedIn {
             hasNotifiedLowBattery = false

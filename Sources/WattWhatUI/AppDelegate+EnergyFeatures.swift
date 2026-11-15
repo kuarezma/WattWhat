@@ -197,9 +197,7 @@ extension AppDelegate {
   }
 
   @objc func openEnergyDashboard() {
-    if energyDashboardWindowController == nil {
-      energyDashboardWindowController = EnergyDashboardWindowController(model: energyDashboardModel)
-    }
+    ensureStudioWindowController()
     if let snapshot = applicationPowerTimeline.snapshot(
       window: TimeInterval(selectedEnergyWindow.rawValue))
     {
@@ -208,7 +206,8 @@ extension AppDelegate {
       energyDashboardModel.history = energyHistoryStore.points
       energyDashboardModel.currentBatteryWatts = lastWatts
     }
-    energyDashboardWindowController?.present()
+    refreshPowerControlStateBackground(forceProbe: true)
+    energyDashboardWindowController?.present(tab: .energyHistory)
   }
 
   @objc func exportEnergyHistory() {

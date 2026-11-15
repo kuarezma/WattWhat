@@ -1,78 +1,47 @@
 # WattWhat ⚡️
 
-A minimalist and smart macOS menu bar application built with pure Swift that monitors your MacBook's real-time battery usage, charging wattage, and temperature.
+Pure Swift ile geliştirilmiş gelişmiş macOS menü çubuğu güç izleme ve aktif şarj watt kontrol uygulaması. MacBook'unuzun anlık şarj gücünü (Watt), uygulama bazlı enerji tüketimini, pil/CPU sıcaklıklarını takip edebilir ve istediğiniz zaman şarj gücünü manuel Watt seviyesine (5 W – 140 W) ya da otomatik macOS yönetimine alabilirsiniz.
 
 ## Features
 
-- **Live Power Monitoring:** Displays the exact instantaneous wattage your MacBook is consuming (when on battery) or receiving (when charging).
-- **Dynamic Icons:** The menu bar icon changes color to visually indicate your battery status:
-  - 🟢 **Green Bolt:** Charging
-  - 🟡 **Yellow Bolt:** On Battery
-- **Smart Averages:** Calculates your true average charging speed or power consumption from the moment the power state changes.
-- **Time Remaining:** Shows exactly how much time is left until your battery is fully charged or completely empty, in a clean `(1s 20d)` format.
-- **Battery Temperature:** Monitors the `AppleSmartBattery` sensor to show real-time temperature in °C.
-- **Per-App Energy:** Ranks the three applications with the highest kernel-attributed process energy over the latest 3-second sample. Helper and child processes are grouped under their parent application.
-- **Flexible Measurement Windows:** Switch between 3-second live, 30-second average, and 5-minute average views. Each row shows its share of app-attributed energy and the current measurement coverage.
-- **Energy History Dashboard:** Stores seven days of local history and presents separate battery-flow and app-attributed-energy charts for 1 hour, 24 hours, or 7 days.
-- **CSV Export:** Exports timestamped battery power, charge state, app-attributed power, coverage, and top applications.
-- **Smart Alerts:** Warns about sustained high-consumption apps, rapid battery drain, high battery temperature, critical thermal pressure, and useful Low Power Mode opportunities.
-- **Application Details:** Expands each app into its helper-process contributions and provides Activate, Reveal in Finder, and confirmed Quit actions.
-- **True Battery Health:** Automatically reads and displays the exact official battery health percentage from `system_profiler` to match macOS System Settings perfectly.
-- **Smart Notifications:** Sends elegant macOS system notifications when your battery is fully charged (100%) or drops below 20%.
-- **Launch at Login:** Includes a built-in toggle using native `SMAppService` to automatically start when you turn on your Mac.
+- **Aktif Şarj Watt Kontrolü (5 W – 140 W):** MacBook'unuzu ister otomatik macOS yönetiminde bırakın, ister net pil şarj gücünü veya toplam adaptör çekiş limitini kendiniz belirleyin (`5W Gece`, `10W Serin`, `15W Dengeli`, `20W Standart`, `30W Hızlı`, `45W`, `67W`, `96W+` veya 5–140 W arası herhangi bir tam sayı).
+- **Şarj & Güç Stüdyosu (`⌘P`):** Sağ üst menü ikonunun hemen içinden açılan birleşik kontrol merkezi ile canlı `Adaptör ➔ Sistem Yükü + Pil Akışı` şemasını, aktif USB-PD PDO profillerini, 4 çalışma modunu ve AppleSMC donanım matrisini yönetin.
+- **Adaptörde Beklet (0W Passthrough) & Yelken/Deşarj Modu:** Pili doldurmayı durdurup yalnızca prizden çalışabilir (`0W`) veya fişe takılıyken belirlediğiniz pil yüzdesine (`%20–%90`) kadar güvenli biçimde deşarj edebilirsiniz (`%15` güvenlik kilidi ile).
+- **Pil Şarj Tavanı, Histerezis & Tek Seferlik %100 (Top-Up):** `%50–%100` arası şarj tavanı ve histerezis korumasını ayarlayın; seyahat öncesi tek tıkla "Bugünlük %100 Doldur" modunu açın.
+- **3 Kademeli Özel Şarj Eğrisi & Akıllı Otomasyon:** Pil yüzdesine göre (`%0–50`, `%50–80`, `%80–100`) kademeli Watt düşüşü tanımlayın; otomatik termal kısma, gece sessiz/soğuk şarj penceresi, şarja takılma davranışı ve MagSafe 3 LED kontrolünü (`Otomatik`, `Yeşil`, `Turuncu`, `Kapalı`) özelleştirin.
+- **Yetkili Güç Motoru (`wattwhat-helper`) & `wattctl` CLI:** `AppleSMC` yazma işlemlerini güvenli bir `LaunchDaemon` servisi üzerinden yürütür, fabrika başlangıç değerlerini yedekler ve `wattctl` terminal aracıyla tam kontrol sağlar.
+- **Canlı Güç & Uygulama Bazlı Enerji İzleme:** `IOKit` / `AppleSmartBattery` verileriyle anlık Watt, 3 sn / 30 sn / 5 dk uygulama enerji sıralaması, 7 günlük grafikler ve CSV dışa aktarma sunar.
+- **Akıllı Uyarılar & Başlangıçta Aç:** Pil %20 / %80 / %100 bildirimleri, yüksek sıcaklık ve yoğun tüketim uyarıları ile native `SMAppService` otomatik başlatma desteği içerir.
 
-## How It Works
+## Installation / Usage
 
-WattWhat directly queries the macOS `IOKit` framework and `AppleSmartBattery` registry to read raw hardware sensors like `Voltage` and `Amperage`. It calculates true instantaneous wattage (`Watts = Voltage * Amperage / 1,000,000`) every 3 seconds for extreme accuracy, bypassing the delay often seen in standard system monitors.
-
-Per-app values are measured independently from the battery total. WattWhat samples macOS process resource counters (`ri_energy_nj`) and converts the energy delta into watts. These values represent energy attributed by macOS to application processes; they do not divide total battery wattage by CPU percentage.
-
-Energy history is saved locally under the user's Application Support directory. No history or application-usage data is uploaded. Samples are retained for seven days and written at most once every 30 seconds.
-
-### Installation Methods
-
-There are several ways to install WattWhat depending on your preference. All available on the [Releases](https://github.com/kuarezma/WattWhat/releases) page:
-
-1. **(Recommended) Auto-Install Script:** Download the `Yukle_WattWhat.command` file from the latest release, double-click to run it. It will securely download, install to `/Applications`, bypass macOS "app is damaged" (quarantine) warnings, and launch the app automatically.
-2. **PKG Installer:** Download `WattWhat.pkg` and follow the standard macOS installation wizard.
-3. **DMG Disk Image:** Download `WattWhat.dmg`, open it, and drag the app into your Applications folder.
-4. **ZIP Archive:** Download `WattWhat.zip`, extract it, and move it to Applications.
-
-*Note: If you use the DMG or ZIP and get an "app is damaged and cannot be opened" error, this is a standard macOS security feature for unsigned apps. To fix it quickly, open Terminal and run `xattr -cr /Applications/WattWhat.app`.*
-
-### Building from Source
-WattWhat uses a small Swift core module plus native AppKit and SwiftUI/Charts interface files.
-
-1. Clone or download this repository.
-2. Open your terminal and navigate to the folder.
-3. Run the automated build script (written in Swift) to compile the app and generate all distribution files (`.zip`, `.dmg`, `.pkg`, and `Yukle_WattWhat.command`) automatically:
+### Uygulamayı Derleme ve Kurma
 
 ```bash
+cd /Users/ugurmac/Documents/PROJELER/whatwatt
+swift test
 ./build.swift
 ```
 
-Run the core unit tests with:
+Derleme çıktısı olan `WattWhat.app` paketini `/Applications/WattWhat.app` konumuna taşıyıp açtığınızda sağ üst menü çubuğunda aktif olur. İlk manuel watt veya tavan kontrolü sırasında uygulama, arka plan güç motorunu (`com.kuarezma.wattwhat.helper`) kurmak için bir kez macOS yönetici onayı (Touch ID / şifre) ister.
+
+### Terminal CLI (`wattctl`) Kullanımı
 
 ```bash
-swift test
-```
-
-Alternatively, to compile the app bundle manually:
-
-```bash
-swiftc WattWhat.swift Sources/WattWhatCore/*.swift Sources/WattWhatUI/*.swift -o "WattWhat.app/Contents/MacOS/WattWhat"
+wattctl status                 # Canlı güç akışı ve USB-PD PDO profilleri
+wattctl auto                   # macOS otomatik yönetimine devret
+wattctl watt 15                # Net 15 W ile şarj et
+wattctl watt 25 --adapter      # Toplam adaptör çekişini 25 W ile sınırla
+wattctl passthrough            # Şarjı durdur (0 W), fişten çalış
+wattctl discharge 60           # Fişteyken %60'a kadar pilden tüket
+wattctl limit 80               # Maksimum şarj tavanını %80 yap
+wattctl topup                  # Tek seferlik %100'e tamamla
+wattctl led green              # MagSafe LED (auto | green | amber | off)
+wattctl probe                  # Canlı AppleSMC donanım anahtar matrisi
 ```
 
 ## Requirements
 
-- macOS 13.0 or later (for native SMAppService Login Item support, though fallback exists for older versions)
-- Apple Silicon (M1/M2/M3) or Intel Mac
-
-## License
-
-MIT License. Feel free to use, modify, and distribute as you wish!
-
-## Changelog
-
-- **2026-07-07 — v1.6.0:** Added 3-second/30-second/5-minute energy views, coverage and percentage reporting, seven-day history charts, CSV export, smart alerts, helper-process details, and safe per-app actions.
-- **2026-07-07 — v1.5.6:** Replaced CPU-proportional estimated app wattage with measured process-energy deltas, application-level process grouping, and unit tests.
+- macOS 13.0 or later
+- Apple Silicon (M1/M2/M3/M4) or Intel Mac
+- MIT License

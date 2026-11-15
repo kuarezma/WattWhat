@@ -219,13 +219,82 @@ struct EnergyDashboardView: View {
   }
 }
 
+enum StudioTab: String, CaseIterable, Identifiable {
+  case powerStudio = "⚡️ Şarj & Güç Stüdyosu"
+  case energyHistory = "📊 Enerji Geçmişi"
+  var id: String { rawValue }
+}
+
+struct WattWhatStudioRootView: View {
+  @ObservedObject var dashboardModel: EnergyDashboardModel
+  @ObservedObject var powerStudioModel: PowerStudioModel
+  @Binding var selectedTab: StudioTab
+
+  var body: some View {
+    VStack(spacing: 0) {
+      HStack {
+        Picker("", selection: $selectedTab) {
+          ForEach(StudioTab.allCases) { tab in
+            Text(tab.rawValue).tag(tab)
+          }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 420)
+        Spacer()
+        Text("WattWhat v2.0")
+          .font(.caption.monospacedDigit())
+          .foregroundStyle(.secondary)
+      }
+      .padding(.horizontal, 20)
+      .padding(.vertical, 10)
+      .background(.bar)
+
+      Divider()
+
+      switch selectedTab {
+      case .powerStudio:
+        PowerStudioView(model: powerStudioModel)
+      case .energyHistory:
+        EnergyDashboardView(model: dashboardModel)
+      }
+    }
+    .frame(minWidth: 920, minHeight: 760)
+  }
+}
+
+final class StudioSelectionState: ObservableObject {
+  @Published var selectedTab: StudioTab = .powerStudio
+}
+
+struct StudioHostWrapperView: View {
+  @ObservedObject var dashboardModel: EnergyDashboardModel
+  @ObservedObject var powerStudioModel: PowerStudioModel
+  @ObservedObject var selectionState: StudioSelectionState
+
+  var body: some View {
+    WattWhatStudioRootView(
+      dashboardModel: dashboardModel,
+      powerStudioModel: powerStudioModel,
+      selectedTab: $selectionState.selectedTab
+    )
+  }
+}
+
 final class EnergyDashboardWindowController: NSWindowController {
-  init(model: EnergyDashboardModel) {
-    let hostingController = NSHostingController(rootView: EnergyDashboardView(model: model))
+  private let selectionState = StudioSelectionState()
+
+  init(model: EnergyDashboardModel, powerStudioModel: PowerStudioModel) {
+    let hostingController = NSHostingController(
+      rootView: StudioHostWrapperView(
+        dashboardModel: model,
+        powerStudioModel: powerStudioModel,
+        selectionState: selectionState
+      )
+    )
     let window = NSWindow(contentViewController: hostingController)
-    window.title = "WattWhat Enerji Geçmişi"
+    window.title = "WattWhat — Güç Kontrolü & Enerji Stüdyosu"
     window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-    window.setContentSize(NSSize(width: 900, height: 760))
+    window.setContentSize(NSSize(width: 960, height: 800))
     window.center()
     window.isReleasedWhenClosed = false
     super.init(window: window)
@@ -234,7 +303,8 @@ final class EnergyDashboardWindowController: NSWindowController {
   @available(*, unavailable)
   required init?(coder: NSCoder) { nil }
 
-  func present() {
+  func present(tab: StudioTab = .energyHistory) {
+    selectionState.selectedTab = tab
     showWindow(nil)
     window?.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
