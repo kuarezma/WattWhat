@@ -3,14 +3,15 @@ import Foundation
 import SwiftUI
 
 struct PowerStudioActions {
-  let applyConfig: (ChargeControlConfig) -> Void
-  let setAutomatic: () -> Void
-  let setLowPowerMode: (Bool) -> Void
-  let installHelper: () -> Void
-  let uninstallHelper: () -> Void
-  let refreshNow: () -> Void
+  let applyConfig: @MainActor (ChargeControlConfig) -> Void
+  let setAutomatic: @MainActor () -> Void
+  let setLowPowerMode: @MainActor (Bool) -> Void
+  let installHelper: @MainActor () -> Void
+  let uninstallHelper: @MainActor () -> Void
+  let refreshNow: @MainActor () -> Void
 }
 
+@MainActor
 final class PowerStudioModel: ObservableObject {
   @Published var config: ChargeControlConfig
   @Published var telemetry: LivePowerTelemetry = .empty
@@ -105,6 +106,8 @@ struct PowerStudioView: View {
           .foregroundStyle(.secondary)
           .lineLimit(2)
       }
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel("\(bannerTitle), \(model.activeRegulationMethod.rawValue), \(model.statusFeedbackMessage ?? model.effectiveReason)")
 
       Spacer()
 
@@ -259,6 +262,8 @@ struct PowerStudioView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(10)
     .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title): \(primaryValue), \(subtitle)")
   }
 
   // MARK: - 3. Ana Mod Seçici
@@ -340,6 +345,7 @@ struct PowerStudioView: View {
       )
     }
     .buttonStyle(.plain)
+    .accessibilityLabel("\(mode.title), \(subtitle)\(selected ? ", seçili" : "")")
   }
 
   // MARK: - 4. Manuel Watt Özgürlük Paneli
@@ -413,7 +419,7 @@ struct PowerStudioView: View {
       }
 
       Toggle(
-        "Firmware akım anahtarını kısıtlarsa 60 sn. Akıllı Darbe Regülasyonu (CHIL) yedeğini kullan",
+        "Firmware akım anahtarını kısıtlarsa 60 sn. Akıllı Darbe Regülasyonu (CHIE) yedeğini kullan",
         isOn: Binding(
           get: { model.config.allowDutyCycleFallback },
           set: { newVal in
@@ -576,6 +582,7 @@ struct PowerStudioView: View {
           }
         }
         .frame(maxWidth: 320)
+        .accessibilityLabel("Şarja takıldığında varsayılan davranış")
 
         if model.config.plugInBehavior == .fixedCustomWatts {
           Stepper(
@@ -814,6 +821,7 @@ struct PowerStudioView: View {
           }
           .pickerStyle(.segmented)
           .frame(width: 280)
+          .accessibilityLabel("MagSafe LED modu")
         }
 
         Toggle(

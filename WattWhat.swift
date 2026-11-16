@@ -4,6 +4,7 @@ import IOKit
 import ServiceManagement
 import UserNotifications
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let appVersion = "2.1.0"
     var statusItem: NSStatusItem!
@@ -29,8 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var showTargetWattItem: NSMenuItem!
     
     let cpuTempReader = CPUTemperatureReader()
-    let processEnergyMonitor = ProcessEnergyMonitor()
-    let processEnergyQueue = DispatchQueue(label: "com.wattwhat.process-energy", qos: .utility)
+    let processEnergyWorker = ProcessEnergyWorker()
     let applicationPowerTimeline = ApplicationPowerTimeline()
     let smartAlertEvaluator = SmartAlertEvaluator()
     lazy var energyHistoryStore = EnergyHistoryStore(
@@ -103,8 +103,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var lastWatts: Double = 0.0
     var lastNetBatteryWatts: Double = 0.0
+    var lastSystemLoadWatts: Double = 0.0
     var configMutationRevision: UInt64 = 0
     var isRefreshingPowerControl = false
+    private var isUpdating = false
     var lastPercentage: Double = 0.0
     var lastTimeString: String = "(...)"
     var lastIsCharging: Bool = false
@@ -273,7 +275,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         updateTimer = Timer.scheduledTimer(timeInterval: 43200.0, target: self, selector: #selector(checkForUpdatesAndHealth), userInfo: nil, repeats: true)
         
-        timer = Timer.scheduledTimer(timeInterval: 3.0, target: self, selector: #selector(updateBatteryStatus), userInfo: nil, repeats: true)
+        let statusTimer = Timer.scheduledTimer(timeInterval: 3.0, target: self, selector: #selector(updateBatteryStatus), userInfo: nil, repeats: true)
+        RunLoop.main.add(statusTimer, forMode: .common)
+        timer = statusTimer
     }
     
     func sendNotification(title: String, body: String) {
@@ -285,7 +289,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
     
-    func isVersionGreater(_ remote: String, _ local: String) -> Bool {
+    nonisolated static func isVersionGreater(_ remote: String, _ local: String) -> Bool {
         let remoteParts = remote.split(separator: ".").compactMap { Int($0) }
         let localParts = local.split(separator: ".").compactMap { Int($0) }
         for i in 0..<max(remoteParts.count, localParts.count) {
@@ -299,14 +303,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     
     @objc func checkForUpdates() {
         guard let url = URL(string: "https://api.github.com/repos/kuarezma/WattWhat/releases/latest") else { return }
+        let currentVersion = appVersion
         let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
             guard let data = data, error == nil else { return }
             do {
                 if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
                    let tagName = json["tag_name"] as? String {
                     let remoteVersion = tagName.replacingOccurrences(of: "v", with: "")
-                    if let current = self?.appVersion, self?.isVersionGreater(remoteVersion, current) == true {
-                        DispatchQueue.main.async {
+                    if Self.isVersionGreater(remoteVersion, currentVersion) {
+                        Task { @MainActor [weak self] in
                             self?.showUpdateAlert(newVersion: tagName)
                         }
                     }
@@ -321,7 +326,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func showUpdateAlert(newVersion: String) {
         let alert = NSAlert()
         alert.messageText = "Yeni Güncelleme Mevcut! 🚀"
-        alert.informativeText = "WattWhat'ın yeni sürümü (\(newVersion)) çıktı. Şimdi güncellemek ister misiniz?\n\nGüncelle işlemi arka planda sessizce indirilecek ve uygulama yeniden başlatılacaktır."
+        alert.informativeText = "WattWhat'ın yeni sürümü (\(newVersion)) çıktı. Şimdi güncellemek ister misiniz?\n\nGüncelleme işlemi arka planda sessizce indirilecek ve uygulama yeniden başlatılacaktır."
         alert.addButton(withTitle: "Güncelle")
         alert.addButton(withTitle: "Daha Sonra")
         alert.alertStyle = .informational
@@ -333,16 +338,154 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     
     func performSilentUpdate() {
+        guard !isUpdating else { return }
+        isUpdating = true
         let pid = ProcessInfo.processInfo.processIdentifier
-        let script = "nohup bash -c 'if curl -fsSL https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o /tmp/WattWhat.zip && unzip -oq /tmp/WattWhat.zip -d /Applications && xattr -cr /Applications/WattWhat.app && rm -f /tmp/WattWhat.zip; then kill -TERM \(pid) >/dev/null 2>&1 || true; i=0; while kill -0 \(pid) >/dev/null 2>&1 && [ $i -lt 25 ]; do sleep 0.2; i=$((i+1)); done; open /Applications/WattWhat.app; else rm -f /tmp/WattWhat.zip; fi' > /dev/null 2>&1 &"
-        let task = Process()
-        task.launchPath = "/bin/bash"
-        task.arguments = ["-c", script]
-        do {
-            try task.run()
-        } catch {
-            print("Failed to run update script")
+
+        Task {
+            do {
+                try await Self.downloadVerifyAndInstallUpdate(currentPID: pid)
+                NSApp.terminate(nil)
+            } catch {
+                isUpdating = false
+                showUpdateErrorAlert(message: error.localizedDescription)
+            }
         }
+    }
+
+    private func showUpdateErrorAlert(message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Güncelleme Başarısız"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Tamam")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    private nonisolated static func runUpdateHelperProcess(
+        _ executablePath: String,
+        arguments: [String]
+    ) throws -> (status: Int32, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        let errPipe = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errPipe
+        try process.run()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let stderr = String(data: errData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (process.terminationStatus, stderr)
+    }
+
+    private nonisolated static func downloadVerifyAndInstallUpdate(currentPID: Int32) async throws {
+        guard let downloadURL = URL(string: "https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip") else {
+            throw NSError(
+                domain: "WattWhatUpdate",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Geçersiz güncelleme bağlantısı."]
+            )
+        }
+
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent(
+            "wattwhat-update-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try fm.createDirectory(
+            at: tempDir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let (downloadedTmpURL, response) = try await URLSession.shared.download(from: downloadURL)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            throw NSError(
+                domain: "WattWhatUpdate",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Güncelleme indirilemedi (HTTP \(httpResponse.statusCode))."]
+            )
+        }
+
+        let zipURL = tempDir.appendingPathComponent("WattWhat.zip")
+        if fm.fileExists(atPath: zipURL.path) {
+            try fm.removeItem(at: zipURL)
+        }
+        try fm.moveItem(at: downloadedTmpURL, to: zipURL)
+
+        let extractDir = tempDir.appendingPathComponent("extracted", isDirectory: true)
+        try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
+
+        let extractResult = try runUpdateHelperProcess(
+            "/usr/bin/ditto",
+            arguments: ["-x", "-k", zipURL.path, extractDir.path]
+        )
+        guard extractResult.status == 0 else {
+            throw NSError(
+                domain: "WattWhatUpdate",
+                code: Int(extractResult.status),
+                userInfo: [NSLocalizedDescriptionKey: "Güncelleme arşivi açılamadı: \(extractResult.stderr)"]
+            )
+        }
+
+        let extractedAppURL = extractDir.appendingPathComponent("WattWhat.app", isDirectory: true)
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: extractedAppURL.path, isDirectory: &isDir), isDir.boolValue else {
+            throw NSError(
+                domain: "WattWhatUpdate",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "İndirilen arşiv içinde WattWhat.app paketi bulunamadı."]
+            )
+        }
+
+        let infoPlistURL = extractedAppURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Info.plist")
+        guard let infoDict = NSDictionary(contentsOf: infoPlistURL),
+              let bundleID = infoDict["CFBundleIdentifier"] as? String,
+              bundleID == "com.kuarezma.wattwhat" else {
+            throw NSError(
+                domain: "WattWhatUpdate",
+                code: -3,
+                userInfo: [NSLocalizedDescriptionKey: "Paket kimliği (CFBundleIdentifier) doğrulanamadı."]
+            )
+        }
+
+        let codesignResult = try runUpdateHelperProcess(
+            "/usr/bin/codesign",
+            arguments: ["--verify", "--deep", "--strict", extractedAppURL.path]
+        )
+        guard codesignResult.status == 0 else {
+            throw NSError(
+                domain: "WattWhatUpdate",
+                code: Int(codesignResult.status),
+                userInfo: [NSLocalizedDescriptionKey: "Kod imzası doğrulaması başarısız oldu: \(codesignResult.stderr)"]
+            )
+        }
+
+        _ = try? runUpdateHelperProcess("/usr/bin/xattr", arguments: ["-cr", extractedAppURL.path])
+
+        let destinationURL = URL(fileURLWithPath: "/Applications/WattWhat.app")
+        if fm.fileExists(atPath: destinationURL.path) {
+            _ = try fm.replaceItemAt(destinationURL, withItemAt: extractedAppURL)
+        } else {
+            try fm.copyItem(at: extractedAppURL, to: destinationURL)
+        }
+
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/bash")
+        relaunch.arguments = [
+            "-c",
+            "i=0; while kill -0 \(currentPID) >/dev/null 2>&1 && [ $i -lt 25 ]; do sleep 0.2; i=$((i+1)); done; open /Applications/WattWhat.app"
+        ]
+        relaunch.standardOutput = FileHandle.nullDevice
+        relaunch.standardError = FileHandle.nullDevice
+        try relaunch.run()
     }
     
     @objc func checkForUpdatesAndHealth() {
@@ -351,9 +494,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     
     @objc func updateSystemProfilerBatteryHealth() {
-        DispatchQueue.global(qos: .background).async {
+        DispatchQueue.global(qos: .background).async { [weak self] in
             let task = Process()
-            task.launchPath = "/usr/sbin/system_profiler"
+            task.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
             task.arguments = ["SPPowerDataType"]
             
             let pipe = Pipe()
@@ -366,9 +509,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let regex = try NSRegularExpression(pattern: "Maximum Capacity:\\s*[%]?(\\d+)[%]?", options: .caseInsensitive)
                     if let match = regex.firstMatch(in: output, options: [], range: NSRange(location: 0, length: output.utf16.count)) {
                         if let range = Range(match.range(at: 1), in: output), let percentage = Double(String(output[range])) {
-                            DispatchQueue.main.async {
-                                self.cachedSystemProfilerBatteryHealth = percentage
-                                self.updateBatteryStatus()
+                            Task { @MainActor [weak self] in
+                                self?.cachedSystemProfilerBatteryHealth = percentage
+                                self?.updateBatteryStatus()
                             }
                         }
                     }
@@ -390,7 +533,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func systemPowerStateDidChange(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             self?.powerStudioModel.isSystemLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
     }
@@ -457,11 +600,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     
     func updateTopAppsBackground() {
-        processEnergyQueue.async { [weak self] in
-            guard let self else { return }
-            let sample = self.processEnergyMonitor.sample()
-            DispatchQueue.main.async {
-                self.displayProcessEnergy(sample)
+        processEnergyWorker.sample { [weak self] sample in
+            Task { @MainActor [weak self] in
+                self?.displayProcessEnergy(sample)
             }
         }
     }
@@ -528,11 +669,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 print("Error toggling login item: \(error)")
             }
-        } else {
-            let bundleID = Bundle.main.bundleIdentifier ?? "com.wattwhat.app"
-            let isEnabled = (loginItem.state == .on)
-            SMLoginItemSetEnabled(bundleID as CFString, !isEnabled)
-            loginItem.state = isEnabled ? .off : .on
         }
     }
     
@@ -588,13 +724,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         if let button = statusItem.button {
-            if title != lastStatusBarTitleString {
+            let titleChanged = title != lastStatusBarTitleString
+            let colorChanged = colorState != lastStatusBarColorState
+
+            if titleChanged {
                 lastStatusBarTitleString = title
                 let font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
                 button.attributedTitle = NSAttributedString(string: title, attributes: [.font: font])
             }
 
-            if colorState != lastStatusBarColorState {
+            if colorChanged {
                 lastStatusBarColorState = colorState
                 let symbolColor: NSColor
                 switch colorState {
@@ -604,79 +743,65 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 default: symbolColor = .systemYellow
                 }
                 let config = NSImage.SymbolConfiguration(paletteColors: [symbolColor])
-                let symbol = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
+                let symbol = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "WattWhat Güç İzleyici")?.withSymbolConfiguration(config)
                 symbol?.isTemplate = false
                 button.image = symbol
                 button.imagePosition = .imageLeft
             }
-        }
-    }
 
-    private static func signedInt64Value(_ raw: Any?) -> Int64? {
-        if let number = raw as? NSNumber {
-            return Int64(bitPattern: number.uint64Value)
+            if titleChanged || colorChanged {
+                let stateDescription: String
+                switch colorState {
+                case 3: stateDescription = "Manuel watt limiti aktif"
+                case 2: stateDescription = "Şarj oluyor"
+                case 1: stateDescription = "Adaptörde"
+                default: stateDescription = "Pilde"
+                }
+                let accessibilityComponents = [
+                    "WattWhat Güç İzleyici",
+                    stateDescription,
+                    title.isEmpty ? nil : title
+                ].compactMap { $0 }
+                button.setAccessibilityLabel(accessibilityComponents.joined(separator: ", "))
+            }
         }
-        if let intVal = raw as? Int {
-            return Int64(intVal)
-        }
-        return nil
     }
 
     @objc func updateBatteryStatus() {
         let now = Date()
         let delta = now.timeIntervalSince(lastUpdateDate)
         lastUpdateDate = now
-        
-        var watts: Double = 0.0
-        var netBattWatts: Double = 0.0
-        var isPluggedInSmart = false
-        var isChargingSmart = false
+
         let shouldReadThermal = isMenuOpen || now.timeIntervalSince(lastThermalSampleDate) >= 30.0
         if shouldReadThermal {
             lastThermalSampleDate = now
+        }
+
+        let telemetry = PowerTelemetryReader.read(now: now)
+        let netBattWatts = telemetry.batteryChargeWatts
+        var watts = netBattWatts
+        if watts < 0.05 {
+            if telemetry.systemLoadWatts > 0 {
+                watts = telemetry.systemLoadWatts
+            } else if telemetry.systemInputWatts > 0 {
+                watts = telemetry.systemInputWatts
+            }
+        }
+
+        if shouldReadThermal {
+            if let battTemp = telemetry.batteryTemp_C {
+                lastBatteryTemperature = battTemp
+            } else {
+                lastBatteryTemperature = cpuTempReader.readBatteryTemperature()
+            }
+            lastCPUTemperature = cpuTempReader.readCPUTemperature()
         }
 
         let service = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"))
         if service != 0 {
             defer { IOObjectRelease(service) }
 
-            let voltageRaw = IORegistryEntryCreateCFProperty(service, "Voltage" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
-            let amperageRaw = IORegistryEntryCreateCFProperty(service, "Amperage" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
-            if let voltage = Self.signedInt64Value(voltageRaw),
-               let amperage = Self.signedInt64Value(amperageRaw),
-               voltage > 0 {
-                netBattWatts = amperage == 0 ? 0.0 : abs(Double(voltage) * Double(amperage)) / 1_000_000.0
-                watts = netBattWatts
-            }
-
-            if let extConn = IORegistryEntryCreateCFProperty(service, "ExternalConnected" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool {
-                isPluggedInSmart = extConn
-            }
-            if let chargingProp = IORegistryEntryCreateCFProperty(service, "IsCharging" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool {
-                isChargingSmart = chargingProp
-            }
-
-            let telemetryDict = IORegistryEntryCreateCFProperty(service, "PowerTelemetryData" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any]
-            if watts < 0.05, let telemetryDict {
-                if let sysLoad = Self.signedInt64Value(telemetryDict["SystemLoad"]), sysLoad > 0, sysLoad < 250_000 {
-                    watts = Double(sysLoad) / 1_000.0
-                } else if let sysPowerIn = Self.signedInt64Value(telemetryDict["SystemPowerIn"]), sysPowerIn > 0, sysPowerIn < 250_000 {
-                    watts = Double(sysPowerIn) / 1_000.0
-                } else if let battPower = Self.signedInt64Value(telemetryDict["BatteryPower"]), battPower != 0, abs(battPower) < 250_000 {
-                    watts = abs(Double(battPower)) / 1_000.0
-                }
-            }
-
             let batteryDataDict = IORegistryEntryCreateCFProperty(service, "BatteryData" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any]
-
-            if shouldReadThermal {
-                if let tempRef = IORegistryEntryCreateCFProperty(service, "Temperature" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int, tempRef > 0 {
-                    lastBatteryTemperature = Double(tempRef) / 100.0
-                } else {
-                    lastBatteryTemperature = cpuTempReader.readBatteryTemperature()
-                }
-                lastCPUTemperature = cpuTempReader.readCPUTemperature()
-            }
 
             var cycleCount = 0
             var designCapacity = 0
@@ -719,37 +844,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         
-        var isPluggedIn = isPluggedInSmart
-        var isCharging = isChargingSmart
+        let isPluggedIn = telemetry.isPluggedIn
+        let isCharging = telemetry.isCharging
+        let isFullyCharged = telemetry.isFullyCharged
+        let percentage = telemetry.batteryPercent
         var timeRemaining: Int = 0
-        var isFullyCharged = false
-        var percentage: Double = 0.0
-        
-        let snapshot = IOPSCopyPowerSourcesInfo().takeRetainedValue()
-        let sources = IOPSCopyPowerSourcesList(snapshot).takeRetainedValue() as Array
-        
-        for source in sources {
-            if let info = IOPSGetPowerSourceDescription(snapshot, source).takeUnretainedValue() as? [String: Any] {
-                let type = info[kIOPSTypeKey] as? String ?? ""
-                if type != kIOPSInternalBatteryType { continue }
-                
-                let state = info[kIOPSPowerSourceStateKey] as? String ?? ""
-                isPluggedIn = (state == kIOPSACPowerValue) || isPluggedInSmart
-                if let iopsCharging = info[kIOPSIsChargingKey] as? Bool {
-                    isCharging = iopsCharging
-                }
-                isFullyCharged = (info[kIOPSIsChargedKey] as? Bool) ?? false
-                
-                let currentCapacity = info[kIOPSCurrentCapacityKey] as? Int ?? 0
-                let maxCapacity = info[kIOPSMaxCapacityKey] as? Int ?? 100
-                if maxCapacity > 0 {
-                    percentage = (Double(currentCapacity) / Double(maxCapacity)) * 100.0
-                }
-                
-                if isCharging {
-                    timeRemaining = info[kIOPSTimeToFullChargeKey] as? Int ?? 0
-                } else if !isPluggedIn {
-                    timeRemaining = info[kIOPSTimeToEmptyKey] as? Int ?? 0
+
+        if isCharging || !isPluggedIn {
+            let snapshot = IOPSCopyPowerSourcesInfo().takeRetainedValue()
+            let sources = IOPSCopyPowerSourcesList(snapshot).takeRetainedValue() as Array
+            for source in sources {
+                if let info = IOPSGetPowerSourceDescription(snapshot, source).takeUnretainedValue() as? [String: Any] {
+                    let type = info[kIOPSTypeKey] as? String ?? ""
+                    if type != kIOPSInternalBatteryType { continue }
+                    if isCharging {
+                        timeRemaining = info[kIOPSTimeToFullChargeKey] as? Int ?? 0
+                    } else if !isPluggedIn {
+                        timeRemaining = info[kIOPSTimeToEmptyKey] as? Int ?? 0
+                    }
                 }
             }
         }
@@ -765,11 +877,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             wattSamplesCount = 0
             wasCharging = isPluggedIn
             if !prevPlugged && isPluggedIn {
-                let adapterRating = PowerTelemetryReader.read(now: now).adapterRatingWatts
                 handlePlugInTransition(
                     wasPluggedIn: prevPlugged,
                     nowPluggedIn: isPluggedIn,
-                    adapterRatingWatts: adapterRating
+                    adapterRatingWatts: telemetry.adapterRatingWatts
                 )
             }
         }
@@ -803,6 +914,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         lastWatts = watts
         lastNetBatteryWatts = netBattWatts
+        lastSystemLoadWatts = telemetry.systemLoadWatts
         lastPercentage = percentage
         lastTimeString = timeString
         lastIsCharging = isCharging
@@ -814,7 +926,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         refreshStatusBarTitle()
         updateTopAppsBackground()
-        refreshPowerControlStateBackground(forceProbe: false)
+        refreshPowerControlStateBackground(forceProbe: false, prefetchedTelemetry: telemetry)
 
         if !hasInitializedBatteryState {
             if isPluggedIn {
@@ -963,18 +1075,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
-class CPUTemperatureReader {
-    private typealias IOHIDEventSystemClient = AnyObject
-    private typealias IOHIDServiceClient = AnyObject
-    private typealias IOHIDEvent = AnyObject
+final class ProcessEnergyWorker: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.wattwhat.process-energy", qos: .utility)
+    private let monitor = ProcessEnergyMonitor()
 
-    private typealias IOHIDEventSystemClientCreate = @convention(c) (_ allocator: CFAllocator?) -> IOHIDEventSystemClient?
+    func sample(completion: @escaping @Sendable (ProcessEnergySample) -> Void) {
+        queue.async {
+            let result = self.monitor.sample()
+            completion(result)
+        }
+    }
+
+    func reset() {
+        queue.async {
+            self.monitor.reset()
+        }
+    }
+}
+
+final class CPUTemperatureReader: @unchecked Sendable {
+    private typealias IOHIDEventSystemClient = CFTypeRef
+    private typealias IOHIDServiceClient = CFTypeRef
+    private typealias IOHIDEvent = CFTypeRef
+
+    private typealias IOHIDEventSystemClientCreate = @convention(c) (_ allocator: CFAllocator?) -> Unmanaged<CFTypeRef>?
     private typealias IOHIDEventSystemClientSetMatching = @convention(c) (_ client: IOHIDEventSystemClient?, _ matches: CFDictionary?) -> Void
-    private typealias IOHIDEventSystemClientCopyServices = @convention(c) (_ client: IOHIDEventSystemClient?) -> CFArray?
-    private typealias IOHIDServiceClientCopyEvent = @convention(c) (_ client: IOHIDServiceClient?, _ eventType: Int64, _ option: Int32, _ mask: Int64) -> IOHIDEvent?
+    private typealias IOHIDEventSystemClientCopyServices = @convention(c) (_ client: IOHIDEventSystemClient?) -> Unmanaged<CFArray>?
+    private typealias IOHIDServiceClientCopyEvent = @convention(c) (_ client: IOHIDServiceClient?, _ eventType: Int64, _ option: Int32, _ mask: Int64) -> Unmanaged<CFTypeRef>?
     private typealias IOHIDEventGetFloatValue = @convention(c) (_ event: IOHIDEvent?, _ field: UInt32) -> Double
-    private typealias IOHIDServiceClientCopyProperty = @convention(c) (_ service: IOHIDServiceClient?, _ property: CFString?) -> CFTypeRef?
+    private typealias IOHIDServiceClientCopyProperty = @convention(c) (_ service: IOHIDServiceClient?, _ property: CFString?) -> Unmanaged<CFTypeRef>?
 
+    private let lock = NSLock()
     private var client: IOHIDEventSystemClient?
     private var eventSystemClientCopyServices: IOHIDEventSystemClientCopyServices?
     private var serviceClientCopyEvent: IOHIDServiceClientCopyEvent?
@@ -1006,7 +1137,7 @@ class CPUTemperatureReader {
         }
 
         if let clientCreate = clientCreate, let clientSetMatching = clientSetMatching {
-            client = clientCreate(kCFAllocatorDefault)
+            client = clientCreate(kCFAllocatorDefault)?.takeRetainedValue()
             clientSetMatching(client, [
                 "PrimaryUsage": 5,
                 "PrimaryUsagePage": 65280
@@ -1019,13 +1150,13 @@ class CPUTemperatureReader {
               let client = client,
               let copyServices = eventSystemClientCopyServices,
               let copyProperty = serviceClientCopyProperty,
-              let services = copyServices(client) as? [IOHIDServiceClient] else {
+              let services = copyServices(client)?.takeRetainedValue() as? [IOHIDServiceClient] else {
             return
         }
         var tdie: [IOHIDServiceClient] = []
         var battery: [IOHIDServiceClient] = []
         for service in services {
-            if let nameRef = copyProperty(service, "Product" as CFString),
+            if let nameRef = copyProperty(service, "Product" as CFString)?.takeRetainedValue(),
                let name = nameRef as? String {
                 let lower = name.lowercased()
                 if lower.contains("tdie") {
@@ -1040,6 +1171,9 @@ class CPUTemperatureReader {
     }
 
     func readCPUTemperature() -> Double? {
+        lock.lock()
+        defer { lock.unlock() }
+
         populateSensorCachesIfNeeded()
         guard let services = cachedTDieServices,
               let copyEvent = serviceClientCopyEvent,
@@ -1049,7 +1183,7 @@ class CPUTemperatureReader {
 
         var maxTemp: Double?
         for service in services {
-            if let event = copyEvent(service, 15, 0, 0) {
+            if let event = copyEvent(service, 15, 0, 0)?.takeRetainedValue() {
                 let temp = getFloatValue(event, 983040)
                 if temp > 0 && temp < 150 {
                     if let current = maxTemp {
@@ -1064,6 +1198,9 @@ class CPUTemperatureReader {
     }
 
     func readBatteryTemperature() -> Double? {
+        lock.lock()
+        defer { lock.unlock() }
+
         populateSensorCachesIfNeeded()
         guard let services = cachedBatteryServices,
               let copyEvent = serviceClientCopyEvent,
@@ -1074,7 +1211,7 @@ class CPUTemperatureReader {
         var sum = 0.0
         var count = 0
         for service in services {
-            if let event = copyEvent(service, 15, 0, 0) {
+            if let event = copyEvent(service, 15, 0, 0)?.takeRetainedValue() {
                 let temp = getFloatValue(event, 983040)
                 if temp > 5 && temp < 100 {
                     sum += temp
@@ -1087,7 +1224,7 @@ class CPUTemperatureReader {
 }
 
 extension AppDelegate: UNUserNotificationCenterDelegate {
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         if #available(macOS 14.0, *) {
             completionHandler([.banner, .sound])
         } else {
@@ -1098,6 +1235,7 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
 
 @main
 struct WattWhatApplication {
+    @MainActor
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()

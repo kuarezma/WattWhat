@@ -24,16 +24,20 @@ struct ApplicationHistorySample: Identifiable {
 }
 
 struct EnergyDashboardActions {
-  let activate: (ApplicationPowerUsage) -> Void
-  let reveal: (ApplicationPowerUsage) -> Void
-  let terminate: (ApplicationPowerUsage) -> Void
-  let exportCSV: () -> Void
+  let activate: @MainActor (ApplicationPowerUsage) -> Void
+  let reveal: @MainActor (ApplicationPowerUsage) -> Void
+  let terminate: @MainActor (ApplicationPowerUsage) -> Void
+  let exportCSV: @MainActor () -> Void
 }
 
+@MainActor
 final class EnergyDashboardModel: ObservableObject {
   @Published var history: [EnergyHistoryPoint] = []
   @Published var currentUsages: [ApplicationPowerUsage] = []
   @Published var currentBatteryWatts = 0.0
+  @Published var currentSystemLoadWatts = 0.0
+  @Published var isPluggedIn = false
+  @Published var isCharging = false
   @Published var currentAttributedWatts = 0.0
   @Published var coverage = 0.0
   @Published var selectedRange = DashboardRange.hour
@@ -103,7 +107,10 @@ struct EnergyDashboardView: View {
         }
 
         HStack(spacing: 12) {
-          metricCard("Pil Gücü", value: watts(model.currentBatteryWatts), color: .yellow)
+          metricCard(batteryMetricTitle, value: watts(model.currentBatteryWatts), color: batteryMetricColor)
+          if model.isPluggedIn {
+            metricCard("Sistem Yükü", value: watts(model.currentSystemLoadWatts), color: .indigo)
+          }
           metricCard(
             "Uygulamalara Atfedilen", value: watts(model.currentAttributedWatts), color: .cyan)
           metricCard(
@@ -122,6 +129,8 @@ struct EnergyDashboardView: View {
             }
             .chartForegroundStyleScale(["Pil": Color.yellow, "Şarj": Color.green])
             .frame(minHeight: 170)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Pil gücü geçmiş grafiği, \(model.selectedRange.rawValue), \(model.filteredHistory.count) ölçüm")
 
             Text("Uygulamalara Atfedilen Güç").font(.headline)
             Chart(model.filteredHistory) { point in
@@ -129,7 +138,10 @@ struct EnergyDashboardView: View {
                 x: .value("Zaman", point.date),
                 y: .value("Watt", point.attributedApplicationWatts)
               ).foregroundStyle(.cyan)
-            }.frame(minHeight: 150)
+            }
+            .frame(minHeight: 150)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Uygulamalara atfedilen güç grafiği, \(model.selectedRange.rawValue), \(model.filteredHistory.count) ölçüm")
           }
 
           VStack(alignment: .leading, spacing: 8) {
@@ -139,7 +151,10 @@ struct EnergyDashboardView: View {
                 x: .value("Watt", app.watts),
                 y: .value("Uygulama", app.applicationName)
               ).foregroundStyle(.orange.gradient)
-            }.frame(width: 260, height: 330)
+            }
+            .frame(width: 260, height: 330)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Dönemin en çok tüketen uygulamaları grafiği, \(model.historicalTopApplications.count) uygulama")
           }
         }
 
@@ -155,7 +170,10 @@ struct EnergyDashboardView: View {
               x: .value("Zaman", sample.date),
               y: .value("Watt", sample.watts)
             ).foregroundStyle(.orange)
-          }.frame(height: 110)
+          }
+          .frame(height: 110)
+          .accessibilityElement(children: .combine)
+          .accessibilityLabel("\(selectedApplicationName) güç geçmişi grafiği, \(model.selectedApplicationHistory.count) ölçüm")
         }
         Text("Şu Anki Uygulamalar").font(.headline)
         LazyVStack(spacing: 8) {
@@ -198,6 +216,24 @@ struct EnergyDashboardView: View {
     .frame(minWidth: 850, minHeight: 720)
   }
 
+  private var batteryMetricTitle: String {
+    if model.isCharging {
+      return "Pil Şarj Gücü"
+    } else if model.isPluggedIn && model.currentBatteryWatts < 0.05 {
+      return "Pil Akışı (Beklemede)"
+    }
+    return "Pil Gücü"
+  }
+
+  private var batteryMetricColor: Color {
+    if model.isCharging {
+      return .green
+    } else if model.isPluggedIn && model.currentBatteryWatts < 0.05 {
+      return .teal
+    }
+    return .yellow
+  }
+
   private func metricCard(_ title: String, value: String, color: Color) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       Text(title).font(.caption).foregroundStyle(.secondary)
@@ -206,6 +242,8 @@ struct EnergyDashboardView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(12)
     .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title): \(value)")
   }
 
   private func watts(_ value: Double) -> String {
@@ -240,8 +278,9 @@ struct WattWhatStudioRootView: View {
         }
         .pickerStyle(.segmented)
         .frame(width: 420)
+        .accessibilityLabel("Stüdyo sekmesi")
         Spacer()
-        Text("WattWhat v2.0")
+        Text("WattWhat v2.1.0")
           .font(.caption.monospacedDigit())
           .foregroundStyle(.secondary)
       }
@@ -262,6 +301,7 @@ struct WattWhatStudioRootView: View {
   }
 }
 
+@MainActor
 final class StudioSelectionState: ObservableObject {
   @Published var selectedTab: StudioTab = .powerStudio
 }
