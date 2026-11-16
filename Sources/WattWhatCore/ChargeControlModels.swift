@@ -87,9 +87,39 @@ enum PlugInDefaultBehavior: String, Codable, CaseIterable, Identifiable, Sendabl
 }
 
 struct ChargeCurveStage: Codable, Equatable, Identifiable, Sendable {
-  var id: Int { upToPercent }
+  var stageIndex: Int
   var upToPercent: Int
   var watts: Int
+  var id: Int { stageIndex }
+
+  init(stageIndex: Int = 0, upToPercent: Int, watts: Int) {
+    self.stageIndex = stageIndex
+    self.upToPercent = upToPercent
+    self.watts = watts
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case stageIndex
+    case upToPercent
+    case watts
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let upToPercent = try container.decode(Int.self, forKey: .upToPercent)
+    let watts = try container.decode(Int.self, forKey: .watts)
+    if let stageIndex = try container.decodeIfPresent(Int.self, forKey: .stageIndex) {
+      self.stageIndex = stageIndex
+    } else if upToPercent <= 55 {
+      self.stageIndex = 0
+    } else if upToPercent <= 85 {
+      self.stageIndex = 1
+    } else {
+      self.stageIndex = 2
+    }
+    self.upToPercent = upToPercent
+    self.watts = watts
+  }
 }
 
 struct ChargeControlConfig: Codable, Equatable, Sendable {
@@ -117,9 +147,9 @@ struct ChargeControlConfig: Codable, Equatable, Sendable {
   var lowPowerModeEnabled: Bool
 
   static let defaultCurve: [ChargeCurveStage] = [
-    ChargeCurveStage(upToPercent: 50, watts: 30),
-    ChargeCurveStage(upToPercent: 80, watts: 12),
-    ChargeCurveStage(upToPercent: 100, watts: 5),
+    ChargeCurveStage(stageIndex: 0, upToPercent: 50, watts: 30),
+    ChargeCurveStage(stageIndex: 1, upToPercent: 80, watts: 12),
+    ChargeCurveStage(stageIndex: 2, upToPercent: 100, watts: 5),
   ]
 
   static let defaultConfig = ChargeControlConfig(
@@ -159,12 +189,25 @@ struct ChargeControlConfig: Codable, Equatable, Sendable {
     copy.nightEndHour = ((copy.nightEndHour % 24) + 24) % 24
     copy.nightWatts = min(max(copy.nightWatts, 5), 30)
     copy.plugInFixedWatts = min(max(copy.plugInFixedWatts, 5), 140)
-    copy.curveStages = copy.curveStages
-      .map { ChargeCurveStage(upToPercent: min(max($0.upToPercent, 10), 100), watts: min(max($0.watts, 5), 140)) }
-      .sorted { $0.upToPercent < $1.upToPercent }
-    if copy.curveStages.isEmpty {
-      copy.curveStages = Self.defaultCurve
+    var rawStages = copy.curveStages
+    if rawStages.count < 3 {
+      for fallback in Self.defaultCurve where rawStages.count < 3 {
+        rawStages.append(fallback)
+      }
     }
+    let sorted = rawStages.sorted { $0.upToPercent < $1.upToPercent }
+    let s0Raw = sorted[0]
+    let s1Raw = sorted[1]
+    let s2Raw = sorted[2]
+
+    let s0Percent = min(max(s0Raw.upToPercent, 15), 80)
+    let s1Percent = min(max(s1Raw.upToPercent, max(s0Percent + 5, 25)), 95)
+
+    copy.curveStages = [
+      ChargeCurveStage(stageIndex: 0, upToPercent: s0Percent, watts: min(max(s0Raw.watts, 5), 140)),
+      ChargeCurveStage(stageIndex: 1, upToPercent: s1Percent, watts: min(max(s1Raw.watts, 5), 140)),
+      ChargeCurveStage(stageIndex: 2, upToPercent: 100, watts: min(max(s2Raw.watts, 5), 140)),
+    ]
     return copy
   }
 }

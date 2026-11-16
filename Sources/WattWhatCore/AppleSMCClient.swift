@@ -12,7 +12,11 @@ struct SMCKeyDiagnostic: Codable, Equatable, Identifiable, Sendable {
   let lastWriteResult: String?
 
   var isWritableFlag: Bool {
-    (attributes & 0x10) != 0
+    (attributes & 0x40) != 0
+  }
+
+  var isReadableFlag: Bool {
+    (attributes & 0x80) != 0
   }
 }
 
@@ -26,6 +30,7 @@ enum AppleSMCError: Error, LocalizedError, Sendable {
   case openFailed(kern_return_t)
   case callFailed(key: String, kernReturn: kern_return_t, smcResult: UInt8)
   case keyNotFound(String)
+  case keyNotReadable(String)
   case invalidDataSize(key: String, expected: UInt32, actual: Int)
 
   var errorDescription: String? {
@@ -38,6 +43,8 @@ enum AppleSMCError: Error, LocalizedError, Sendable {
       return "SMC işlemi başarısız (\(key): kr=\(kr), smcResult=\(res))."
     case .keyNotFound(let key):
       return "SMC anahtarı bulunamadı: \(key)"
+    case .keyNotReadable(let key):
+      return "SMC anahtarı okunabilir değil (salt-yazılır): \(key)"
     case .invalidDataSize(let key, let expected, let actual):
       return "SMC boyut uyumsuzluğu (\(key): beklenen \(expected), gelen \(actual))."
     }
@@ -105,16 +112,12 @@ final class AppleSMCClient: @unchecked Sendable {
     "CHI1", "CHI2", "ACLM", "ACPW",
     "CHIL", "CHCE", "CHIE", "CHLT", "ACLC",
     "CH0B", "CH0C", "CHTE", "CH0I", "CH0J",
+    "D1BI", "D2BI", "D3BI", "UB0C",
     "bfG0", "bfI0", "bfJ0", "bfK0", "bfL0",
   ]
 
   static let controlledKeysForBaseline: [String] = [
-    "BTIL", "BTSI",
-    "CIPW", "CIPR", "CIPI",
-    "CHAS", "CHA1", "CHA2", "CHAI",
-    "CHI1", "CHI2", "ACLM",
-    "CHIL", "CHCE", "CHIE", "CHLT", "ACLC",
-    "CH0B", "CH0C", "CHTE",
+    "CHIE", "D1BI", "D2BI", "D3BI",
   ]
 
   private var connection: io_connect_t = 0
@@ -242,6 +245,9 @@ final class AppleSMCClient: @unchecked Sendable {
 
   func readKey(_ key: String) throws -> (bytes: [UInt8], dataType: String, attributes: UInt8) {
     let info = try keyInfo(for: key)
+    guard (info.attributes & 0x80) != 0 else {
+      throw AppleSMCError.keyNotReadable(key)
+    }
     guard info.dataSize > 0, info.dataSize <= 32 else {
       throw AppleSMCError.invalidDataSize(key: key, expected: info.dataSize, actual: 0)
     }
@@ -300,6 +306,9 @@ final class AppleSMCClient: @unchecked Sendable {
   func captureBaseline(keys: [String] = AppleSMCClient.controlledKeysForBaseline) -> SMCBaselineSnapshot {
     var map: [String: [UInt8]] = [:]
     for key in keys {
+      guard let info = try? keyInfo(for: key), (info.attributes & 0xc0) == 0xc0 else {
+        continue
+      }
       if let read = try? readKey(key) {
         map[key] = read.bytes
       }
@@ -311,6 +320,20 @@ final class AppleSMCClient: @unchecked Sendable {
     var results: [String: String] = [:]
     for (key, bytes) in snapshot.keys {
       do {
+        let info = try keyInfo(for: key)
+        if key == "ACLC" {
+          guard (info.attributes & 0x40) != 0 else {
+            results[key] = "Atlandı (salt-okunur)"
+            continue
+          }
+          try writeKey(key, bytes: [0x00])
+          results[key] = "OK"
+          continue
+        }
+        guard (info.attributes & 0xc0) == 0xc0 else {
+          results[key] = "Atlandı (salt-okunur)"
+          continue
+        }
         try writeKey(key, bytes: bytes)
         results[key] = "OK"
       } catch {
@@ -320,9 +343,25 @@ final class AppleSMCClient: @unchecked Sendable {
     return results
   }
 
+  static func baselineContainsLegacyReadOnlyKeys(_ snapshot: SMCBaselineSnapshot) -> Bool {
+    snapshot.keys.keys.contains(where: { ["BTIL", "CHIL", "CHCE", "CIPW", "ACLC"].contains($0) })
+  }
+
   static func probeReadableChargerKeys(lastWriteResults: [String: String] = [:]) -> [SMCKeyDiagnostic] {
     guard let client = try? AppleSMCClient() else { return [] }
     return knownPowerAndChargerKeys.compactMap { key in
+      guard let info = try? client.keyInfo(for: key) else { return nil }
+      if (info.attributes & 0x80) == 0 {
+        return SMCKeyDiagnostic(
+          key: key,
+          dataType: info.dataType,
+          dataSize: info.dataSize,
+          attributes: info.attributes,
+          currentHex: "(write-only)",
+          numericSummary: "salt-yazılır",
+          lastWriteResult: lastWriteResults[key]
+        )
+      }
       guard let res = try? client.readKey(key) else { return nil }
       let hex = res.bytes.map { String(format: "%02x", $0) }.joined()
       let summary = formatNumericSummary(dataType: res.dataType, bytes: res.bytes)

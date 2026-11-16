@@ -213,6 +213,148 @@ func forceDischargeEnforcesSafetyFloorAt15Percent() {
   }
 }
 
+@Test("SMCKeyDiagnostic bit 7 okuma ve bit 6 yazma bayraklarını doğru yorumlar")
+func smcKeyDiagnosticReadWriteBitmasks() {
+  let readOnly = SMCKeyDiagnostic(
+    key: "BTIL", dataType: "ui8", dataSize: 1, attributes: 0x94,
+    currentHex: "00", numericSummary: "0", lastWriteResult: nil
+  )
+  #expect(readOnly.isReadableFlag)
+  #expect(!readOnly.isWritableFlag)
+
+  let readWrite = SMCKeyDiagnostic(
+    key: "CHIE", dataType: "ui8", dataSize: 1, attributes: 0xd4,
+    currentHex: "00", numericSummary: "0", lastWriteResult: nil
+  )
+  #expect(readWrite.isReadableFlag)
+  #expect(readWrite.isWritableFlag)
+
+  let writeOnly = SMCKeyDiagnostic(
+    key: "D1BI", dataType: "ui8", dataSize: 1, attributes: 0x54,
+    currentHex: "(write-only)", numericSummary: "salt-yazılır", lastWriteResult: nil
+  )
+  #expect(!writeOnly.isReadableFlag)
+  #expect(writeOnly.isWritableFlag)
+}
+
+@Test("AppleSMCClient eski salt-okunur veya ACLC içeren baseline snapshot'ını tespit eder")
+func baselineLegacyReadOnlyKeyDetection() {
+  let legacySnapshot = SMCBaselineSnapshot(
+    capturedAt: Date(),
+    keys: ["CHIE": [0x00], "BTIL": [0x01], "ACLC": [0x03]]
+  )
+  #expect(AppleSMCClient.baselineContainsLegacyReadOnlyKeys(legacySnapshot))
+
+  let cleanSnapshot = SMCBaselineSnapshot(
+    capturedAt: Date(),
+    keys: ["CHIE": [0x00], "D1BI": [0x00]]
+  )
+  #expect(!AppleSMCClient.baselineContainsLegacyReadOnlyKeys(cleanSnapshot))
+  #expect(AppleSMCClient.controlledKeysForBaseline == ["CHIE", "D1BI", "D2BI", "D3BI"])
+}
+
+@Test("ChargeControlConfig.clamped 3 kademeli eğriyi sıralar, kıstırır ve eski JSON ile uyumludur")
+func chargeCurveClampingAndLegacyJSONDecoding() throws {
+  var config = ChargeControlConfig.defaultConfig
+  config.curveStages = [
+    ChargeCurveStage(stageIndex: 2, upToPercent: 98, watts: 200),
+    ChargeCurveStage(stageIndex: 1, upToPercent: 5, watts: 1),
+    ChargeCurveStage(stageIndex: 0, upToPercent: 18, watts: 50),
+  ]
+  let clamped = config.clamped()
+  #expect(clamped.curveStages.count == 3)
+  #expect(clamped.curveStages.map(\.stageIndex) == [0, 1, 2])
+  #expect(clamped.curveStages[0].upToPercent == 15)
+  #expect(clamped.curveStages[0].watts == 5)
+  #expect(clamped.curveStages[1].upToPercent == 25)
+  #expect(clamped.curveStages[1].watts == 50)
+  #expect(clamped.curveStages[2].upToPercent == 100)
+  #expect(clamped.curveStages[2].watts == 140)
+  #expect(clamped.curveStages[0].upToPercent < clamped.curveStages[1].upToPercent)
+  #expect(clamped.curveStages[1].upToPercent < clamped.curveStages[2].upToPercent)
+
+  // Eşikler birbirine çok yakın olduğunda stage1 >= stage0 + 5 garanti edilmeli
+  var tightConfig = ChargeControlConfig.defaultConfig
+  tightConfig.curveStages = [
+    ChargeCurveStage(upToPercent: 80, watts: 40),
+    ChargeCurveStage(upToPercent: 81, watts: 20),
+    ChargeCurveStage(upToPercent: 99, watts: 10),
+  ]
+  let clampedTight = tightConfig.clamped()
+  #expect(clampedTight.curveStages[0].upToPercent == 80)
+  #expect(clampedTight.curveStages[1].upToPercent == 85)
+  #expect(clampedTight.curveStages[2].upToPercent == 100)
+
+  // Eski stageIndex içermeyen JSON decode testi
+  let legacyJSON = """
+  [
+    {"upToPercent": 50, "watts": 30},
+    {"upToPercent": 80, "watts": 12},
+    {"upToPercent": 100, "watts": 5}
+  ]
+  """.data(using: .utf8)!
+  let decoded = try JSONDecoder().decode([ChargeCurveStage].self, from: legacyJSON)
+  #expect(decoded.map(\.stageIndex) == [0, 1, 2])
+  #expect(decoded.map(\.id) == [0, 1, 2])
+}
+
+@Test("HelperResponse sürüm eskimesini ve RegulationMethod aktif regülasyon durumunu doğru bildirir")
+func helperVersionOutdatedAndRegulationMethodFlags() {
+  let telemetry = sampleTelemetry(percent: 60, temp: 30)
+  let outdated = HelperResponse(
+    ok: true,
+    isHelperRunning: true,
+    helperVersion: "2.0.0",
+    activeRegulationMethod: .powerUIMacroPulse,
+    effectiveReason: "Test",
+    appliedTargetWatts: 20,
+    currentDutyCycleRatio: nil,
+    config: .defaultConfig,
+    telemetry: telemetry,
+    smcDiagnostics: [],
+    errorMessage: nil
+  )
+  #expect(outdated.isHelperOutdated)
+
+  let current = HelperResponse(
+    ok: true,
+    isHelperRunning: true,
+    helperVersion: HelperConstants.protocolVersion,
+    activeRegulationMethod: .automaticOS,
+    effectiveReason: "Test",
+    appliedTargetWatts: nil,
+    currentDutyCycleRatio: nil,
+    config: .defaultConfig,
+    telemetry: telemetry,
+    smcDiagnostics: [],
+    errorMessage: nil
+  )
+  #expect(!current.isHelperOutdated)
+
+  let offline = HelperResponse.offline(config: .defaultConfig, telemetry: telemetry)
+  #expect(!offline.isHelperOutdated)
+
+  #expect(RegulationMethod.directSMCHardware.isActivelyRegulating)
+  #expect(RegulationMethod.powerUIMacroPulse.isActivelyRegulating)
+  #expect(RegulationMethod.macroPulseModulation.isActivelyRegulating)
+  #expect(RegulationMethod.powerUIPassthrough.isActivelyRegulating)
+  #expect(RegulationMethod.hardwareInhibit.isActivelyRegulating)
+  #expect(RegulationMethod.adapterSuspend.isActivelyRegulating)
+  #expect(!RegulationMethod.automaticOS.isActivelyRegulating)
+  #expect(!RegulationMethod.firmwareRestricted.isActivelyRegulating)
+  #expect(!RegulationMethod.helperOffline.isActivelyRegulating)
+}
+
+@Test("PowerUIBridge.shared.readState çökmeden geçerli PowerUIState döndürür")
+func powerUIBridgeReadStateIsSafe() {
+  let state = PowerUIBridge.shared.readState()
+  #expect((1...100).contains(state.currentLimit))
+  if !state.isSupported {
+    #expect(!state.isEnabled)
+    #expect(state.currentLimit == 100)
+  }
+}
+
 private func sampleTelemetry(
   percent: Double,
   temp: Double?,
