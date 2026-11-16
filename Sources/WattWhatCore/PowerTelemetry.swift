@@ -2,48 +2,100 @@ import Foundation
 import IOKit
 import IOKit.ps
 
-struct USBPDProfile: Codable, Equatable, Identifiable, Sendable {
-  var id: Int { index }
-  let index: Int
-  let maxVoltage_mV: Int
-  let maxCurrent_mA: Int
+public struct USBPDProfile: Codable, Equatable, Identifiable, Sendable {
+  public var id: Int { index }
+  public let index: Int
+  public let maxVoltage_mV: Int
+  public let maxCurrent_mA: Int
 
-  var maxVoltage_V: Double { Double(maxVoltage_mV) / 1_000.0 }
-  var maxCurrent_A: Double { Double(maxCurrent_mA) / 1_000.0 }
-  var maxWatts: Double { (Double(maxVoltage_mV) * Double(maxCurrent_mA)) / 1_000_000.0 }
+  public init(index: Int, maxVoltage_mV: Int, maxCurrent_mA: Int) {
+    self.index = index
+    self.maxVoltage_mV = maxVoltage_mV
+    self.maxCurrent_mA = maxCurrent_mA
+  }
+
+  public var maxVoltage_V: Double { Double(maxVoltage_mV) / 1_000.0 }
+  public var maxCurrent_A: Double { Double(maxCurrent_mA) / 1_000.0 }
+  public var maxWatts: Double { (Double(maxVoltage_mV) * Double(maxCurrent_mA)) / 1_000_000.0 }
 }
 
-struct LivePowerTelemetry: Codable, Equatable, Sendable {
-  let timestamp: Date
-  let isPluggedIn: Bool
-  let isCharging: Bool
-  let isFullyCharged: Bool
-  let batteryPercent: Double
-  let batteryVoltage_V: Double
-  let batteryCurrent_A: Double
-  let batteryChargeWatts: Double
-  let adapterRatingWatts: Int
-  let adapterVoltage_V: Double
-  let adapterCurrent_A: Double
-  let systemInputWatts: Double
-  let systemLoadWatts: Double
-  let efficiencyLossWatts: Double
-  let pmuConfiguredCurrent_mA: Int
-  let ipdWattageOverride_mW: Int
-  let activePDOIndex: Int?
-  let pdoProfiles: [USBPDProfile]
-  let batteryTemp_C: Double?
-  let notChargingReason: Int
-  let slowChargingReason: Int
+public struct LivePowerTelemetry: Codable, Equatable, Sendable {
+  public let timestamp: Date
+  public let isPluggedIn: Bool
+  public let isCharging: Bool
+  public let isFullyCharged: Bool
+  public let batteryPercent: Double
+  public let batteryVoltage_V: Double
+  public let batteryCurrent_A: Double
+  public let batteryChargeWatts: Double
+  public let adapterRatingWatts: Int
+  public let adapterVoltage_V: Double
+  public let adapterCurrent_A: Double
+  public let systemInputWatts: Double
+  public let systemLoadWatts: Double
+  public let efficiencyLossWatts: Double
+  public let pmuConfiguredCurrent_mA: Int
+  public let ipdWattageOverride_mW: Int
+  public let activePDOIndex: Int?
+  public let pdoProfiles: [USBPDProfile]
+  public let batteryTemp_C: Double?
+  public let notChargingReason: Int
+  public let slowChargingReason: Int
+
+  public init(
+    timestamp: Date,
+    isPluggedIn: Bool,
+    isCharging: Bool,
+    isFullyCharged: Bool,
+    batteryPercent: Double,
+    batteryVoltage_V: Double,
+    batteryCurrent_A: Double,
+    batteryChargeWatts: Double,
+    adapterRatingWatts: Int,
+    adapterVoltage_V: Double,
+    adapterCurrent_A: Double,
+    systemInputWatts: Double,
+    systemLoadWatts: Double,
+    efficiencyLossWatts: Double,
+    pmuConfiguredCurrent_mA: Int,
+    ipdWattageOverride_mW: Int,
+    activePDOIndex: Int?,
+    pdoProfiles: [USBPDProfile],
+    batteryTemp_C: Double?,
+    notChargingReason: Int,
+    slowChargingReason: Int
+  ) {
+    self.timestamp = timestamp
+    self.isPluggedIn = isPluggedIn
+    self.isCharging = isCharging
+    self.isFullyCharged = isFullyCharged
+    self.batteryPercent = batteryPercent
+    self.batteryVoltage_V = batteryVoltage_V
+    self.batteryCurrent_A = batteryCurrent_A
+    self.batteryChargeWatts = batteryChargeWatts
+    self.adapterRatingWatts = adapterRatingWatts
+    self.adapterVoltage_V = adapterVoltage_V
+    self.adapterCurrent_A = adapterCurrent_A
+    self.systemInputWatts = systemInputWatts
+    self.systemLoadWatts = systemLoadWatts
+    self.efficiencyLossWatts = efficiencyLossWatts
+    self.pmuConfiguredCurrent_mA = pmuConfiguredCurrent_mA
+    self.ipdWattageOverride_mW = ipdWattageOverride_mW
+    self.activePDOIndex = activePDOIndex
+    self.pdoProfiles = pdoProfiles
+    self.batteryTemp_C = batteryTemp_C
+    self.notChargingReason = notChargingReason
+    self.slowChargingReason = slowChargingReason
+  }
 
   /// Anlık pil net gücü (şarjda pozitif, deşarjda negatif kabul eden yerler için büyüklük).
-  var signedBatteryWatts: Double {
+  public var signedBatteryWatts: Double {
     if isCharging { return abs(batteryChargeWatts) }
     if batteryCurrent_A < 0 { return -abs(batteryChargeWatts) }
     return batteryChargeWatts
   }
 
-  static let empty = LivePowerTelemetry(
+  public static let empty = LivePowerTelemetry(
     timestamp: Date(),
     isPluggedIn: false,
     isCharging: false,
@@ -68,7 +120,7 @@ struct LivePowerTelemetry: Codable, Equatable, Sendable {
   )
 }
 
-enum PowerTelemetryReader {
+public enum PowerTelemetryReader {
   private static func signedInt64Value(_ raw: Any?) -> Int64? {
     if let number = raw as? NSNumber {
       return Int64(bitPattern: number.uint64Value)
@@ -85,7 +137,7 @@ enum PowerTelemetryReader {
     return nil
   }
 
-  static func read(now: Date = Date()) -> LivePowerTelemetry {
+  public static func read(now: Date = Date()) -> LivePowerTelemetry {
     var isPluggedIn = false
     var isCharging = false
     var isFullyCharged = false

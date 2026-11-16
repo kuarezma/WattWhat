@@ -34,6 +34,37 @@ func historyStoreThrottlesAndExports() throws {
   try? FileManager.default.removeItem(at: directory)
 }
 
+@Test("EnergyHistoryStore eşzamanlı append, points, csv ve flush çağrılarında thread-safe çalışır")
+func historyStoreIsThreadSafeUnderConcurrentAccess() {
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  let fileURL = directory.appendingPathComponent("concurrent-history.json")
+  let store = EnergyHistoryStore(
+    fileURL: fileURL,
+    retention: 24 * 3600,
+    minimumInterval: -10_000,
+    saveInterval: 60,
+    maxPoints: 2_880
+  )
+  let baseDate = Date(timeIntervalSince1970: 10_000)
+
+  DispatchQueue.concurrentPerform(iterations: 80) { index in
+    let point = historyPoint(at: baseDate.addingTimeInterval(Double(index * 10)))
+    store.append(point)
+    _ = store.points.count
+    _ = store.csv()
+    if index.isMultiple(of: 10) {
+      store.flush()
+    }
+  }
+  store.flush()
+
+  #expect(store.points.count == 80)
+  #expect(store.csv().split(separator: "\n").count == 81)
+  #expect(EnergyHistoryStore(fileURL: fileURL).points.count == 80)
+
+  try? FileManager.default.removeItem(at: directory)
+}
+
 @Test("Hızlı pil düşüşü, yüksek sıcaklık ve kritik ısıl baskı uyarılır")
 func systemHealthAlertsAreDetected() {
   let evaluator = SmartAlertEvaluator()

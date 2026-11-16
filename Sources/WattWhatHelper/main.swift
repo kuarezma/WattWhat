@@ -1,5 +1,10 @@
 import Darwin
 import Foundation
+import Security
+
+#if canImport(WattWhatCore)
+import WattWhatCore
+#endif
 
 final class PowerControlEngine: @unchecked Sendable {
   private let queue = DispatchQueue(label: "com.kuarezma.wattwhat.helper.engine")
@@ -547,6 +552,25 @@ final class PowerControlEngine: @unchecked Sendable {
     }
   }
 
+  func makeErrorResponse(error: String) -> HelperResponse {
+    queue.sync {
+      let telemetry = PowerTelemetryReader.read()
+      return HelperResponse(
+        ok: false,
+        isHelperRunning: true,
+        helperVersion: HelperConstants.protocolVersion,
+        activeRegulationMethod: activeMethod,
+        effectiveReason: error,
+        appliedTargetWatts: appliedTargetWatts,
+        currentDutyCycleRatio: currentDutyRatio,
+        config: config,
+        telemetry: telemetry,
+        smcDiagnostics: [],
+        errorMessage: error
+      )
+    }
+  }
+
   private func makeResponse(
     ok: Bool,
     telemetry: LivePowerTelemetry,
@@ -647,6 +671,8 @@ final class SocketServer {
     }
   }
 
+  private static let maxRequestBytes = 65_536
+
   private func handleClient(_ clientFD: Int32) {
     var tv = timeval(tv_sec: 2, tv_usec: 0)
     setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
@@ -654,23 +680,36 @@ final class SocketServer {
 
     var peerUID: uid_t = 0
     var peerGID: gid_t = 0
-    if getpeereid(clientFD, &peerUID, &peerGID) == 0 {
-      // Yalnızca root (0) veya konsol kullanıcıları (>= 500) kabul edilir
-      if peerUID != 0 && peerUID < 500 {
+    guard getpeereid(clientFD, &peerUID, &peerGID) == 0 else {
+      return
+    }
+    if peerUID != 0 {
+      var consoleStat = stat()
+      guard stat("/dev/console", &consoleStat) == 0, peerUID == consoleStat.st_uid else {
         return
       }
     }
 
     var received = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
+    var exceededLimit = false
     while true {
       let count = Darwin.recv(clientFD, &buffer, buffer.count, 0)
       if count <= 0 { break }
+      if received.count + count > Self.maxRequestBytes {
+        exceededLimit = true
+        break
+      }
       received.append(buffer, count: count)
-      if received.count > 65_536 { break }
       if buffer[0..<count].contains(0x0A) { break }
     }
-    if received.count > 65_536 { return }
+    if exceededLimit {
+      sendResponse(
+        engine.makeErrorResponse(error: "İstek boyutu izin verilen 64 KB sınırını aşıyor."),
+        to: clientFD
+      )
+      return
+    }
     if let newline = received.firstIndex(of: 0x0A) {
       received = received[..<newline]
     }
@@ -678,7 +717,18 @@ final class SocketServer {
       let request = try? JSONDecoder().decode(HelperRequest.self, from: received)
     else { return }
 
+    if requiresTrustedPeer(for: request.command),
+      let authError = verifyTrustedPeer(clientFD: clientFD, peerUID: peerUID)
+    {
+      sendResponse(engine.makeErrorResponse(error: authError), to: clientFD)
+      return
+    }
+
     let response = engine.handleRequest(request)
+    sendResponse(response, to: clientFD)
+  }
+
+  private func sendResponse(_ response: HelperResponse, to clientFD: Int32) {
     if var outData = try? JSONEncoder().encode(response) {
       outData.append(0x0A)
       outData.withUnsafeBytes { raw in
@@ -691,6 +741,107 @@ final class SocketServer {
         }
       }
     }
+  }
+
+  private func requiresTrustedPeer(for command: HelperCommand) -> Bool {
+    switch command {
+    case .applyConfig, .setAutomatic, .setLowPowerMode, .uninstallCleanup:
+      return true
+    case .status, .probeHardware:
+      return false
+    }
+  }
+
+  private func verifyTrustedPeer(clientFD: Int32, peerUID: uid_t) -> String? {
+    if peerUID == 0 {
+      return nil
+    }
+
+    var peerPID: pid_t = 0
+    var pidLen = socklen_t(MemoryLayout<pid_t>.size)
+    guard getsockopt(clientFD, SOL_LOCAL, LOCAL_PEERPID, &peerPID, &pidLen) == 0,
+      peerPID > 0
+    else {
+      return "Yetkisiz istemci: Süreç kimliği (PID) doğrulanamadı."
+    }
+
+    var pathBuffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN) * 4)
+    let pathLen = pathBuffer.withUnsafeMutableBufferPointer { buffer -> Int32 in
+      guard let base = buffer.baseAddress else { return 0 }
+      return proc_pidpath(peerPID, base, UInt32(buffer.count))
+    }
+    guard pathLen > 0 else {
+      return "Yetkisiz istemci: Çalıştırılabilir dosya yolu okunamadı."
+    }
+
+    let rawPath = String(decoding: pathBuffer.prefix(Int(pathLen)), as: UTF8.self)
+    let resolvedPath = URL(fileURLWithPath: rawPath).resolvingSymlinksInPath().path
+
+    let trustedAppPath = URL(
+      fileURLWithPath: "/Applications/WattWhat.app/Contents/MacOS/WattWhat"
+    ).resolvingSymlinksInPath().path
+    let trustedBundleCLIPath = URL(
+      fileURLWithPath: "/Applications/WattWhat.app/Contents/MacOS/wattctl"
+    ).resolvingSymlinksInPath().path
+    let trustedSystemCLIPath = URL(
+      fileURLWithPath: HelperConstants.cliInstallPath
+    ).resolvingSymlinksInPath().path
+
+    let trustedPaths: Set<String> = [
+      trustedAppPath,
+      trustedBundleCLIPath,
+      trustedSystemCLIPath,
+    ]
+    guard trustedPaths.contains(resolvedPath) else {
+      return "Yetkisiz istemci: Güvenilmeyen ikili dosya konumu (\(resolvedPath))."
+    }
+
+    var guestCode: SecCode?
+    let guestAttributes: [CFString: Any] = [kSecGuestAttributePid: peerPID]
+    guard
+      SecCodeCopyGuestWithAttributes(nil, guestAttributes as CFDictionary, [], &guestCode)
+        == errSecSuccess,
+      let guestCode,
+      SecCodeCheckValidity(guestCode, [], nil) == errSecSuccess
+    else {
+      return "Yetkisiz istemci: Çalışan sürecin kod imzası doğrulanamadı."
+    }
+
+    var staticCode: SecStaticCode?
+    let fileURL = URL(fileURLWithPath: resolvedPath) as CFURL
+    guard SecStaticCodeCreateWithPath(fileURL, [], &staticCode) == errSecSuccess,
+      let staticCode,
+      SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: kSecCSBasicValidateOnly), nil)
+        == errSecSuccess
+    else {
+      return "Yetkisiz istemci: İkili dosyanın kod imzası geçersiz."
+    }
+
+    var signingInfo: CFDictionary?
+    guard
+      SecCodeCopySigningInformation(
+        staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo) == errSecSuccess,
+      let infoDict = signingInfo as? [String: Any],
+      let signingID = infoDict[kSecCodeInfoIdentifier as String] as? String
+    else {
+      return "Yetkisiz istemci: Kod imzası tanımlayıcısı okunamadı."
+    }
+
+    if resolvedPath == trustedAppPath {
+      guard signingID == "com.kuarezma.wattwhat" else {
+        return "Yetkisiz istemci: Uygulama bundle kimliği uyuşmuyor (\(signingID))."
+      }
+    } else {
+      let isTrustedCLIIdentifier =
+        signingID == "com.kuarezma.wattwhat"
+        || signingID == "wattctl"
+        || signingID.hasPrefix("wattctl-")
+      guard isTrustedCLIIdentifier else {
+        return "Yetkisiz istemci: CLI kod imzası kimliği uyuşmuyor (\(signingID))."
+      }
+    }
+
+    return nil
   }
 }
 
@@ -737,7 +888,7 @@ if args.contains("--daemon") {
   let engine = PowerControlEngine()
   signal(SIGTERM, SIG_IGN)
   signal(SIGINT, SIG_IGN)
-  let shutdownHandler: () -> Void = {
+  let shutdownHandler: @Sendable () -> Void = {
     engine.restoreBaselineOnShutdown()
     unlink(HelperConstants.socketPath)
     exit(0)

@@ -1,12 +1,12 @@
 import Foundation
 
-enum EnergyDisplayWindow: Int, CaseIterable, Identifiable {
+public enum EnergyDisplayWindow: Int, CaseIterable, Identifiable, Sendable {
   case instant = 3
   case thirtySeconds = 30
   case fiveMinutes = 300
 
-  var id: Int { rawValue }
-  var title: String {
+  public var id: Int { rawValue }
+  public var title: String {
     switch self {
     case .instant: return "3 sn. anlık"
     case .thirtySeconds: return "30 sn. ortalama"
@@ -15,28 +15,42 @@ enum EnergyDisplayWindow: Int, CaseIterable, Identifiable {
   }
 }
 
-struct SmoothedEnergySnapshot {
-  let usages: [ApplicationPowerUsage]
-  let attributedTotalWatts: Double
-  let coverage: Double
-  let sampleCount: Int
+public struct SmoothedEnergySnapshot: Sendable {
+  public let usages: [ApplicationPowerUsage]
+  public let attributedTotalWatts: Double
+  public let coverage: Double
+  public let sampleCount: Int
+
+  public init(
+    usages: [ApplicationPowerUsage],
+    attributedTotalWatts: Double,
+    coverage: Double,
+    sampleCount: Int
+  ) {
+    self.usages = usages
+    self.attributedTotalWatts = attributedTotalWatts
+    self.coverage = coverage
+    self.sampleCount = sampleCount
+  }
 }
 
-final class ApplicationPowerTimeline {
+public final class ApplicationPowerTimeline {
   private struct Sample {
     let date: Date
     let measurement: ProcessEnergyMeasurement
   }
   private var samples: [Sample] = []
 
-  func reset() { samples.removeAll() }
+  public init() {}
 
-  func add(_ measurement: ProcessEnergyMeasurement, at date: Date = Date()) {
+  public func reset() { samples.removeAll() }
+
+  public func add(_ measurement: ProcessEnergyMeasurement, at date: Date = Date()) {
     samples.append(Sample(date: date, measurement: measurement))
     samples.removeAll { date.timeIntervalSince($0.date) > 310 }
   }
 
-  func snapshot(window: TimeInterval, now: Date = Date()) -> SmoothedEnergySnapshot? {
+  public func snapshot(window: TimeInterval, now: Date = Date()) -> SmoothedEnergySnapshot? {
     let selected = samples.filter { now.timeIntervalSince($0.date) <= window }
     guard !selected.isEmpty else { return nil }
     let totalDuration = selected.reduce(0) { $0 + max($1.measurement.interval, 0.001) }
@@ -81,23 +95,28 @@ final class ApplicationPowerTimeline {
   }
 }
 
-struct HistoricalApplicationUsage: Codable, Equatable, Identifiable {
-  var id: String { applicationName }
-  let applicationName: String
-  let watts: Double
+public struct HistoricalApplicationUsage: Codable, Equatable, Identifiable, Sendable {
+  public var id: String { applicationName }
+  public let applicationName: String
+  public let watts: Double
+
+  public init(applicationName: String, watts: Double) {
+    self.applicationName = applicationName
+    self.watts = watts
+  }
 }
 
-struct EnergyHistoryPoint: Codable, Equatable, Identifiable {
-  let id: UUID
-  let date: Date
-  let batteryWatts: Double
-  let batteryPercentage: Double
-  let isCharging: Bool
-  let attributedApplicationWatts: Double
-  let coverage: Double
-  let applications: [HistoricalApplicationUsage]
+public struct EnergyHistoryPoint: Codable, Equatable, Identifiable, Sendable {
+  public let id: UUID
+  public let date: Date
+  public let batteryWatts: Double
+  public let batteryPercentage: Double
+  public let isCharging: Bool
+  public let attributedApplicationWatts: Double
+  public let coverage: Double
+  public let applications: [HistoricalApplicationUsage]
 
-  init(
+  public init(
     id: UUID = UUID(), date: Date, batteryWatts: Double, batteryPercentage: Double,
     isCharging: Bool, attributedApplicationWatts: Double, coverage: Double,
     applications: [HistoricalApplicationUsage]
@@ -113,8 +132,9 @@ struct EnergyHistoryPoint: Codable, Equatable, Identifiable {
   }
 }
 
-final class EnergyHistoryStore: @unchecked Sendable {
-  private(set) var points: [EnergyHistoryPoint] = []
+public final class EnergyHistoryStore: @unchecked Sendable {
+  private let lock = NSLock()
+  private var _points: [EnergyHistoryPoint] = []
   private let fileURL: URL
   private let retention: TimeInterval
   private let minimumInterval: TimeInterval
@@ -124,7 +144,13 @@ final class EnergyHistoryStore: @unchecked Sendable {
   private var isDirty = false
   private let ioQueue = DispatchQueue(label: "com.kuarezma.wattwhat.history-io", qos: .utility)
 
-  init(
+  public var points: [EnergyHistoryPoint] {
+    lock.lock()
+    defer { lock.unlock() }
+    return _points
+  }
+
+  public init(
     fileURL: URL = EnergyHistoryStore.defaultFileURL(),
     retention: TimeInterval = 7 * 24 * 3600,
     minimumInterval: TimeInterval = 60,
@@ -140,37 +166,58 @@ final class EnergyHistoryStore: @unchecked Sendable {
   }
 
   @discardableResult
-  func append(_ point: EnergyHistoryPoint) -> Bool {
-    if let last = points.last, point.date.timeIntervalSince(last.date) < minimumInterval {
+  public func append(_ point: EnergyHistoryPoint) -> Bool {
+    var syncSnapshot: [EnergyHistoryPoint]?
+    var asyncSnapshot: [EnergyHistoryPoint]?
+
+    lock.lock()
+    if let last = _points.last, point.date.timeIntervalSince(last.date) < minimumInterval {
+      lock.unlock()
       return false
     }
     let compacted = Self.compact(point)
-    points.append(compacted)
-    points.removeAll { compacted.date.timeIntervalSince($0.date) > retention }
-    trimExcessPointsIfNeeded()
+    _points.append(compacted)
+    _points.removeAll { compacted.date.timeIntervalSince($0.date) > retention }
+    trimExcessPointsLocked()
     isDirty = true
 
     if saveInterval <= 0 {
-      saveNow(pointsSnapshot: points)
       lastSaveDate = compacted.date
       isDirty = false
+      syncSnapshot = _points
     } else if let lastSaveDate, compacted.date.timeIntervalSince(lastSaveDate) < saveInterval {
       // Disk yazımını biriktir (coalesce)
     } else {
       lastSaveDate = compacted.date
       isDirty = false
-      let snapshot = points
+      asyncSnapshot = _points
+    }
+    lock.unlock()
+
+    if let syncSnapshot {
+      ioQueue.sync {
+        saveNow(pointsSnapshot: syncSnapshot)
+      }
+    } else if let asyncSnapshot {
       ioQueue.async { [weak self] in
-        self?.saveNow(pointsSnapshot: snapshot)
+        self?.saveNow(pointsSnapshot: asyncSnapshot)
       }
     }
     return true
   }
 
-  func flush() {
-    guard isDirty else { return }
-    isDirty = false
-    let snapshot = points
+  public func flush() {
+    let snapshot: [EnergyHistoryPoint]?
+    lock.lock()
+    if isDirty {
+      isDirty = false
+      snapshot = _points
+    } else {
+      snapshot = nil
+    }
+    lock.unlock()
+
+    guard let snapshot else { return }
     ioQueue.sync {
       saveNow(pointsSnapshot: snapshot)
     }
@@ -198,24 +245,28 @@ final class EnergyHistoryStore: @unchecked Sendable {
     )
   }
 
-  private func trimExcessPointsIfNeeded() {
-    guard points.count > maxPoints else { return }
+  private func trimExcessPointsLocked() {
+    guard _points.count > maxPoints else { return }
     // Eski yarısını seyrelterek (her 2 noktadan 1'ini tutarak) uzun dönem geçmişi koru
-    let splitIndex = points.count / 2
-    let olderDownsampled = points[..<splitIndex].enumerated().compactMap { index, element in
+    let splitIndex = _points.count / 2
+    let olderDownsampled = _points[..<splitIndex].enumerated().compactMap { index, element in
       index.isMultiple(of: 2) ? element : nil
     }
-    let newerSlice = points[splitIndex...]
-    points = olderDownsampled + newerSlice
-    if points.count > maxPoints {
-      points.removeFirst(points.count - maxPoints)
+    let newerSlice = _points[splitIndex...]
+    _points = olderDownsampled + newerSlice
+    if _points.count > maxPoints {
+      _points.removeFirst(_points.count - maxPoints)
     }
   }
 
-  func csv() -> String {
+  public func csv() -> String {
+    lock.lock()
+    let snapshot = _points
+    lock.unlock()
+
     var rows = ["tarih,pil_watt,pil_yuzdesi,durum,uygulama_watt,kapsam,en_cok_tuketenler"]
     let formatter = ISO8601DateFormatter()
-    for point in points {
+    for point in snapshot {
       let apps = point.applications.map { application in
         let watts = String(
           format: "%.3f",
@@ -247,15 +298,23 @@ final class EnergyHistoryStore: @unchecked Sendable {
     else { return }
     let originalCount = decoded.count
     let originalByteCount = data.count
-    points = decoded.map { Self.compact($0) }
-    if let newest = points.last?.date {
-      points.removeAll { newest.timeIntervalSince($0.date) > retention }
+    var loadedPoints = decoded.map { Self.compact($0) }
+    if let newest = loadedPoints.last?.date {
+      loadedPoints.removeAll { newest.timeIntervalSince($0.date) > retention }
     }
-    trimExcessPointsIfNeeded()
-    if points.count < originalCount || originalByteCount > 1_000_000 {
-      let snapshot = points
+
+    var snapshotToSave: [EnergyHistoryPoint]?
+    lock.lock()
+    _points = loadedPoints
+    trimExcessPointsLocked()
+    if _points.count < originalCount || originalByteCount > 1_000_000 {
+      snapshotToSave = _points
+    }
+    lock.unlock()
+
+    if let snapshotToSave {
       ioQueue.async { [weak self] in
-        self?.saveNow(pointsSnapshot: snapshot)
+        self?.saveNow(pointsSnapshot: snapshotToSave)
       }
     }
   }
@@ -269,23 +328,35 @@ final class EnergyHistoryStore: @unchecked Sendable {
     try? data.write(to: fileURL, options: .atomic)
   }
 
-  private static func defaultFileURL() -> URL {
+  public static func defaultFileURL() -> URL {
     let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     return root.appendingPathComponent("WattWhat", isDirectory: true)
       .appendingPathComponent("energy-history.json")
   }
 }
 
-enum ThermalSeverity { case normal, warning, critical }
+public enum ThermalSeverity: Sendable { case normal, warning, critical }
 
-struct SmartAlertSettings {
-  var enabled = true
-  var applicationThresholdWatts = 5.0
-  var sustainedDuration: TimeInterval = 120
-  var cooldown: TimeInterval = 1800
+public struct SmartAlertSettings: Sendable {
+  public var enabled = true
+  public var applicationThresholdWatts = 5.0
+  public var sustainedDuration: TimeInterval = 120
+  public var cooldown: TimeInterval = 1800
+
+  public init(
+    enabled: Bool = true,
+    applicationThresholdWatts: Double = 5.0,
+    sustainedDuration: TimeInterval = 120,
+    cooldown: TimeInterval = 1800
+  ) {
+    self.enabled = enabled
+    self.applicationThresholdWatts = applicationThresholdWatts
+    self.sustainedDuration = sustainedDuration
+    self.cooldown = cooldown
+  }
 }
 
-enum SmartAlertEvent: Equatable {
+public enum SmartAlertEvent: Equatable, Sendable {
   case application(name: String, watts: Double)
   case rapidBatteryDrain(percentPerHour: Double)
   case highBatteryTemperature(celsius: Double)
@@ -293,13 +364,15 @@ enum SmartAlertEvent: Equatable {
   case suggestLowPowerMode
 }
 
-final class SmartAlertEvaluator {
+public final class SmartAlertEvaluator {
   private var thresholdStart: [String: Date] = [:]
   private var lastAlert: [String: Date] = [:]
   private var batteryObservations: [(Date, Double)] = []
   private var lowPowerSuggested = false
 
-  func evaluate(
+  public init() {}
+
+  public func evaluate(
     at date: Date, usages: [ApplicationPowerUsage], batteryPercentage: Double,
     isCharging: Bool, batteryTemperature: Double?, lowPowerModeEnabled: Bool,
     thermalSeverity: ThermalSeverity, settings: SmartAlertSettings
