@@ -313,8 +313,16 @@ extension AppDelegate {
 
     helperIPCQueue.async { [weak self] in
       let result = HelperIPCClient.send(HelperRequest(command: .applyConfig, config: clamped))
-      let fallbackTelemetry = PowerTelemetryReader.read()
-      DispatchQueue.main.async {
+      let fallbackTelemetry: LivePowerTelemetry?
+      let fallbackDiags: [SMCKeyDiagnostic]
+      if case .failure = result {
+        fallbackTelemetry = PowerTelemetryReader.read()
+        fallbackDiags = AppleSMCClient.probeReadableChargerKeys()
+      } else {
+        fallbackTelemetry = nil
+        fallbackDiags = []
+      }
+      Task { @MainActor [weak self] in
         guard let self else { return }
         guard self.configMutationRevision == requestRev else { return }
         self.powerStudioModel.isApplying = false
@@ -325,8 +333,8 @@ extension AppDelegate {
         case .failure(let error):
           let offline = HelperResponse.offline(
             config: clamped,
-            telemetry: fallbackTelemetry,
-            diagnostics: AppleSMCClient.probeReadableChargerKeys(),
+            telemetry: fallbackTelemetry ?? PowerTelemetryReader.read(),
+            diagnostics: fallbackDiags,
             error: error.localizedDescription
           )
           self.syncPowerControlUI(with: offline)
@@ -352,8 +360,16 @@ extension AppDelegate {
 
     helperIPCQueue.async { [weak self] in
       let result = HelperIPCClient.send(HelperRequest(command: .setAutomatic))
-      let fallbackTelemetry = PowerTelemetryReader.read()
-      DispatchQueue.main.async {
+      let fallbackTelemetry: LivePowerTelemetry?
+      let fallbackDiags: [SMCKeyDiagnostic]
+      if case .failure = result {
+        fallbackTelemetry = PowerTelemetryReader.read()
+        fallbackDiags = AppleSMCClient.probeReadableChargerKeys()
+      } else {
+        fallbackTelemetry = nil
+        fallbackDiags = []
+      }
+      Task { @MainActor [weak self] in
         guard let self else { return }
         guard self.configMutationRevision == requestRev else { return }
         switch result {
@@ -363,8 +379,8 @@ extension AppDelegate {
         case .failure:
           let offline = HelperResponse.offline(
             config: updated,
-            telemetry: fallbackTelemetry,
-            diagnostics: AppleSMCClient.probeReadableChargerKeys()
+            telemetry: fallbackTelemetry ?? PowerTelemetryReader.read(),
+            diagnostics: fallbackDiags
           )
           self.syncPowerControlUI(with: offline)
         }
@@ -383,7 +399,7 @@ extension AppDelegate {
     helperIPCQueue.async { [weak self] in
       let result = HelperIPCClient.send(
         HelperRequest(command: .setLowPowerMode, lowPowerMode: enabled))
-      DispatchQueue.main.async {
+      Task { @MainActor [weak self] in
         guard let self else { return }
         switch result {
         case .success(let response):
@@ -411,7 +427,7 @@ extension AppDelegate {
     powerStudioModel.statusFeedbackMessage = "Yönetici izni bekleniyor…"
     helperIPCQueue.async { [weak self] in
       let res = HelperInstaller.installWithAdminPrompt()
-      DispatchQueue.main.async {
+      Task { @MainActor [weak self] in
         guard let self else { return }
         self.powerStudioModel.isApplying = false
         switch res {
@@ -443,7 +459,7 @@ extension AppDelegate {
 
     helperIPCQueue.async { [weak self] in
       let res = HelperInstaller.uninstallWithAdminPrompt()
-      DispatchQueue.main.async {
+      Task { @MainActor [weak self] in
         guard let self else { return }
         switch res {
         case .success:
@@ -459,13 +475,16 @@ extension AppDelegate {
     }
   }
 
-  func refreshPowerControlStateBackground(forceProbe: Bool = false) {
+  func refreshPowerControlStateBackground(
+    forceProbe: Bool = false,
+    prefetchedTelemetry: LivePowerTelemetry? = nil
+  ) {
     if !forceProbe && isRefreshingPowerControl {
       return
     }
     let isStudioVisible = energyDashboardWindowController?.window?.isVisible == true
     guard forceProbe || isMenuOpen || isStudioVisible || HelperIPCClient.isSocketReachable else {
-      let telemetry = PowerTelemetryReader.read()
+      let telemetry = prefetchedTelemetry ?? PowerTelemetryReader.read()
       powerStudioModel.telemetry = telemetry
       powerStudioModel.isHelperInstalled = HelperIPCClient.isHelperInstalled
       powerStudioModel.isHelperRunning = false
@@ -481,10 +500,17 @@ extension AppDelegate {
     helperIPCQueue.async { [weak self] in
       let cmd: HelperCommand = (forceProbe || isStudioVisible) ? .probeHardware : .status
       let result = HelperIPCClient.send(HelperRequest(command: cmd), timeoutSeconds: 1.5)
-      let fallbackTelemetry = PowerTelemetryReader.read()
-      let fallbackDiags =
-        (forceProbe || isStudioVisible) ? AppleSMCClient.probeReadableChargerKeys() : []
-      DispatchQueue.main.async {
+      let fallbackTelemetry: LivePowerTelemetry?
+      let fallbackDiags: [SMCKeyDiagnostic]
+      if case .failure = result {
+        fallbackTelemetry = prefetchedTelemetry ?? PowerTelemetryReader.read()
+        fallbackDiags =
+          (forceProbe || isStudioVisible) ? AppleSMCClient.probeReadableChargerKeys() : []
+      } else {
+        fallbackTelemetry = nil
+        fallbackDiags = []
+      }
+      Task { @MainActor [weak self] in
         guard let self else { return }
         self.isRefreshingPowerControl = false
         guard self.configMutationRevision == capturedRev else {
@@ -492,7 +518,7 @@ extension AppDelegate {
           if case .success(let response) = result {
             telemetry = response.telemetry
           } else {
-            telemetry = fallbackTelemetry
+            telemetry = fallbackTelemetry ?? PowerTelemetryReader.read()
           }
           self.powerStudioModel.telemetry = telemetry
           self.updatePowerSummaryMenu(telemetry: telemetry)
@@ -504,7 +530,7 @@ extension AppDelegate {
         case .failure:
           let offline = HelperResponse.offline(
             config: self.chargeControlConfig,
-            telemetry: fallbackTelemetry,
+            telemetry: fallbackTelemetry ?? PowerTelemetryReader.read(),
             diagnostics: fallbackDiags
           )
           self.syncPowerControlUI(with: offline)
@@ -519,6 +545,9 @@ extension AppDelegate {
       chargeControlConfig = response.config
       LocalConfigStore.save(response.config)
       powerStudioModel.config = response.config
+    }
+    if response.telemetry.systemLoadWatts > 0 {
+      lastSystemLoadWatts = response.telemetry.systemLoadWatts
     }
     powerStudioModel.telemetry = response.telemetry
     powerStudioModel.isHelperInstalled = HelperIPCClient.isHelperInstalled

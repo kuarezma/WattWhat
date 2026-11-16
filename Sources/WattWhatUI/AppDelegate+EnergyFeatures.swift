@@ -65,9 +65,10 @@ extension AppDelegate {
   }
 
   func recordEnergyHistory(_ snapshot: SmoothedEnergySnapshot, at date: Date) {
+    let recordedBatteryWatts = lastPluggedIn ? lastNetBatteryWatts : lastWatts
     let point = EnergyHistoryPoint(
       date: date,
-      batteryWatts: lastWatts,
+      batteryWatts: recordedBatteryWatts,
       batteryPercentage: lastPercentage,
       isCharging: lastIsCharging,
       attributedApplicationWatts: snapshot.attributedTotalWatts,
@@ -79,10 +80,18 @@ extension AppDelegate {
     _ = energyHistoryStore.append(point)
   }
 
-  func updateDashboard(_ snapshot: SmoothedEnergySnapshot) {
+  private func syncEnergyDashboardPowerMetrics() {
     energyDashboardModel.history = energyHistoryStore.points
+    energyDashboardModel.currentBatteryWatts = lastPluggedIn ? lastNetBatteryWatts : lastWatts
+    energyDashboardModel.currentSystemLoadWatts =
+      lastSystemLoadWatts > 0 ? lastSystemLoadWatts : lastWatts
+    energyDashboardModel.isPluggedIn = lastPluggedIn
+    energyDashboardModel.isCharging = lastIsCharging
+  }
+
+  func updateDashboard(_ snapshot: SmoothedEnergySnapshot) {
+    syncEnergyDashboardPowerMetrics()
     energyDashboardModel.currentUsages = snapshot.usages
-    energyDashboardModel.currentBatteryWatts = lastWatts
     energyDashboardModel.currentAttributedWatts = snapshot.attributedTotalWatts
     energyDashboardModel.coverage = snapshot.coverage
   }
@@ -185,9 +194,7 @@ extension AppDelegate {
     for item in [topApp1Item, topApp2Item, topApp3Item] {
       item?.isEnabled = false
     }
-    processEnergyQueue.async { [weak self] in
-      self?.processEnergyMonitor.reset()
-    }
+    processEnergyWorker.reset()
   }
 
   @objc func openTopApplication(_ sender: NSMenuItem) {
@@ -203,8 +210,7 @@ extension AppDelegate {
     {
       updateDashboard(snapshot)
     } else {
-      energyDashboardModel.history = energyHistoryStore.points
-      energyDashboardModel.currentBatteryWatts = lastWatts
+      syncEnergyDashboardPowerMetrics()
     }
     refreshPowerControlStateBackground(forceProbe: true)
     energyDashboardWindowController?.present(tab: .energyHistory)
