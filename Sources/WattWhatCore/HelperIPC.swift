@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 enum HelperConstants {
-  static let protocolVersion = "2.0.0"
+  static let protocolVersion = "2.1.0"
   static let machLabel = "com.kuarezma.wattwhat.helper"
   static let socketPath = "/var/run/wattwhat.sock"
   static let helperInstallPath = "/Library/PrivilegedHelperTools/com.kuarezma.wattwhat.helper"
@@ -16,11 +16,23 @@ enum HelperConstants {
 enum RegulationMethod: String, Codable, Sendable {
   case automaticOS = "Otomatik (macOS Yönetimi)"
   case directSMCHardware = "Doğrudan Donanım Akım/Güç Sınırlama"
-  case macroPulseModulation = "Akıllı Makro-Darbe Regülasyonu (CHIL)"
+  case powerUIMacroPulse = "Sıfır-Deşarjlı Akıllı Darbe Regülasyonu (PowerUI)"
+  case macroPulseModulation = "Akıllı Makro-Darbe Regülasyonu (CHIE)"
+  case powerUIPassthrough = "Adaptörde Beklet / 0W Passthrough (PowerUI)"
   case hardwareInhibit = "Donanım Şarj Durdurma (Passthrough)"
   case adapterSuspend = "Adaptör Askıda (Pilden Kullanım)"
   case firmwareRestricted = "Firmware Yazma Kısıtı (Salt İzleme)"
   case helperOffline = "Yetkili Servis Kurulu Değil"
+
+  var isActivelyRegulating: Bool {
+    switch self {
+    case .directSMCHardware, .powerUIMacroPulse, .macroPulseModulation,
+         .powerUIPassthrough, .hardwareInhibit, .adapterSuspend:
+      return true
+    case .automaticOS, .firmwareRestricted, .helperOffline:
+      return false
+    }
+  }
 }
 
 enum HelperCommand: String, Codable, Sendable {
@@ -60,6 +72,10 @@ struct HelperResponse: Codable, Sendable {
   let telemetry: LivePowerTelemetry
   let smcDiagnostics: [SMCKeyDiagnostic]
   let errorMessage: String?
+
+  var isHelperOutdated: Bool {
+    isHelperRunning && helperVersion != HelperConstants.protocolVersion
+  }
 
   static func offline(
     config: ChargeControlConfig,
@@ -195,16 +211,38 @@ enum HelperIPCClient {
 
 enum HelperInstaller {
   static func bundleExecutableDirectory() -> URL {
+    let fm = FileManager.default
     if let execURL = Bundle.main.executableURL {
       let candidate = execURL.deletingLastPathComponent()
-      if FileManager.default.fileExists(
-        atPath: candidate.appendingPathComponent("wattwhat-helper").path)
-      {
+      if fm.fileExists(atPath: candidate.appendingPathComponent("wattwhat-helper").path) {
         return candidate
       }
     }
-    let fallback = URL(fileURLWithPath: "/Applications/WattWhat.app/Contents/MacOS")
-    return fallback
+
+    let devDir = URL(fileURLWithPath: "/Users/ugurmac/Documents/PROJELER/whatwatt/WattWhat.app/Contents/MacOS")
+    let appDir = URL(fileURLWithPath: "/Applications/WattWhat.app/Contents/MacOS")
+    let devHelper = devDir.appendingPathComponent("wattwhat-helper")
+    let appHelper = appDir.appendingPathComponent("wattwhat-helper")
+
+    let devExists = fm.fileExists(atPath: devHelper.path)
+    let appExists = fm.fileExists(atPath: appHelper.path)
+
+    if devExists && appExists {
+      let devDate = (try? devHelper.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        ?? ((try? fm.attributesOfItem(atPath: devHelper.path)[.modificationDate]) as? Date)
+        ?? .distantPast
+      let appDate = (try? appHelper.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        ?? ((try? fm.attributesOfItem(atPath: appHelper.path)[.modificationDate]) as? Date)
+        ?? .distantPast
+      return devDate >= appDate ? devDir : appDir
+    }
+    if devExists {
+      return devDir
+    }
+    if appExists {
+      return appDir
+    }
+    return appDir
   }
 
   static func launchDaemonPlistContent() -> String {
@@ -246,6 +284,7 @@ enum HelperInstaller {
       exit 1
     fi
     /bin/launchctl bootout system/\(HelperConstants.machLabel) >/dev/null 2>&1 || true
+    /bin/rm -f "\(HelperConstants.baselineFilePath)"
     /bin/cp -f "\(helperSrc)" "\(HelperConstants.helperInstallPath)"
     /usr/sbin/chown root:wheel "\(HelperConstants.helperInstallPath)"
     /bin/chmod 755 "\(HelperConstants.helperInstallPath)"
@@ -278,6 +317,10 @@ enum HelperInstaller {
     /bin/rm -f "\(HelperConstants.helperInstallPath)"
     /bin/rm -f "\(HelperConstants.socketPath)"
     /bin/rm -f "\(HelperConstants.cliInstallPath)"
+    /bin/rm -f "\(HelperConstants.configFilePath)"
+    /bin/rm -f "\(HelperConstants.baselineFilePath)"
+    /bin/rm -f "/var/log/wattwhat-helper.log"
+    /bin/rm -f "/var/log/wattwhat-helper.err"
     echo "UNINSTALLED"
     """
   }
