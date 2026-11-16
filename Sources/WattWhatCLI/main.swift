@@ -110,6 +110,9 @@ private func printStatus(json: Bool) -> Int32 {
     }
   }
   print("Servis       : \(effectiveResponse.isHelperRunning ? "Aktif 🟢" : "Kurulu/Aktif Değil 🟡")")
+  if effectiveResponse.isHelperOutdated {
+    print("⚠️  Uyarı        : Arka plan servisi eski sürümde (v\(effectiveResponse.helperVersion) → v\(HelperConstants.protocolVersion)). Güncellemek için: wattctl install")
+  }
   print("Aktif Mod    : \(effectiveResponse.config.mode.title)")
   print("Regülasyon   : \(effectiveResponse.activeRegulationMethod.rawValue)")
   print("Durum Notu   : \(effectiveResponse.effectiveReason)")
@@ -194,13 +197,19 @@ case "limit":
   var (cfg, _) = currentConfigFromHelperOrLocal()
   cfg.maxChargeLimitPercent = limit
   cfg.topUpTo100Active = false
-  if cfg.mode == .automatic && limit < 100 {
+  if cfg.mode == .passthroughHold || cfg.mode == .forceDischarge {
+    print("ℹ️ Tavan %\(limit) olarak kaydedildi (mevcut mod korundu: \(cfg.mode.title)).")
+  } else if cfg.mode == .automatic && limit < 100 {
     cfg.mode = .manualWatts
+    print("ℹ️ %\(limit) tavan koruması için Otomatik moddan Manuel koruma moduna geçildi.")
   }
   exit(sendWriteRequest(HelperRequest(command: .applyConfig, config: cfg)))
 
 case "topup":
   var (cfg, _) = currentConfigFromHelperOrLocal()
+  if cfg.mode != .manualWatts {
+    print("ℹ️ Tek seferlik %100 Top-Up için şarj modu etkinleştirildi.")
+  }
   cfg.mode = .manualWatts
   cfg.topUpTo100Active = true
   exit(sendWriteRequest(HelperRequest(command: .applyConfig, config: cfg)))

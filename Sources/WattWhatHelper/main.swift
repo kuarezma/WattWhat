@@ -5,7 +5,11 @@ final class PowerControlEngine: @unchecked Sendable {
   private let queue = DispatchQueue(label: "com.kuarezma.wattwhat.helper.engine")
   private var config: ChargeControlConfig
   private var baseline: SMCBaselineSnapshot?
+  private var initialPowerUIState: PowerUIState
   private var hasDirtySMCChanges = false
+  private var hasDirtyPowerUIChanges = false
+  private var lastAppliedPowerUILimit: Int?
+  private var lastAppliedPowerUITopUp = false
   private var isInHysteresisHold = false
   private var lastAppliedLED: MagSafeLEDMode?
   private var lastWriteResults: [String: String] = [:]
@@ -15,18 +19,29 @@ final class PowerControlEngine: @unchecked Sendable {
   private var currentDutyRatio: Double?
 
   // Kapalı çevrim geri besleme ve makro-darbe zamanlayıcı durumu
-  private var closedLoopScale: Double = 1.0
-  private var limitStartDate: Date?
   private var lastLimitTargetWatts: Int?
-  private var observedPeakWatts: Double = 30.0
-  private var useMacroPulseFallback = false
+  private var observedActiveChargeWatts: Double?
   private var pulseWindowStart: Date = Date()
+  private var holdPhaseStartDate: Date?
+  private var holdFallbackActiveThisPhase = false
 
   private var timer: DispatchSourceTimer?
 
   init() {
     self.config = Self.loadConfigFromDisk()
-    self.baseline = Self.loadBaselineFromDisk()
+    self.initialPowerUIState = PowerUIBridge.shared.readState()
+    let loadedBaseline = Self.loadBaselineFromDisk()
+    if let loadedBaseline, AppleSMCClient.baselineContainsLegacyReadOnlyKeys(loadedBaseline) {
+      if let client = try? AppleSMCClient() {
+        let captured = client.captureBaseline()
+        self.baseline = captured
+        Self.saveBaselineToDisk(captured)
+      } else {
+        self.baseline = nil
+      }
+    } else {
+      self.baseline = loadedBaseline
+    }
     if self.config.mode != .automatic {
       self.hasDirtySMCChanges = true
     }
@@ -44,11 +59,19 @@ final class PowerControlEngine: @unchecked Sendable {
 
   func restoreBaselineOnShutdown() {
     queue.sync {
-      if hasDirtySMCChanges, let baseline {
+      if hasDirtySMCChanges || (lastAppliedLED != nil && lastAppliedLED != .automatic) {
         if let client = try? AppleSMCClient() {
-          lastWriteResults = client.restoreBaseline(baseline)
+          if let baseline {
+            lastWriteResults = client.restoreBaseline(baseline)
+          }
+          _ = setAdapterSuspend(client: client, suspend: false)
+          _ = recordWrite(client: client, key: "ACLC", bytes: [0x00])
         }
         hasDirtySMCChanges = false
+        lastAppliedLED = .automatic
+      }
+      if hasDirtyPowerUIChanges {
+        restoreInitialPowerUIState()
       }
     }
   }
@@ -72,10 +95,15 @@ final class PowerControlEngine: @unchecked Sendable {
           if clamped.targetWatts != config.targetWatts || clamped.mode != config.mode
             || clamped.targetScope != config.targetScope
           {
-            closedLoopScale = 1.0
-            limitStartDate = nil
             lastLimitTargetWatts = nil
-            useMacroPulseFallback = false
+            holdPhaseStartDate = nil
+            holdFallbackActiveThisPhase = false
+            if clamped.targetScope != config.targetScope || clamped.mode != config.mode {
+              observedActiveChargeWatts = nil
+            }
+            if clamped.mode != config.mode {
+              pulseWindowStart = Date()
+            }
           }
           config = clamped
           Self.saveConfigToDisk(config)
@@ -88,9 +116,10 @@ final class PowerControlEngine: @unchecked Sendable {
       case .setAutomatic:
         config.mode = .automatic
         config.topUpTo100Active = false
-        closedLoopScale = 1.0
-        limitStartDate = nil
-        useMacroPulseFallback = false
+        lastLimitTargetWatts = nil
+        observedActiveChargeWatts = nil
+        holdPhaseStartDate = nil
+        holdFallbackActiveThisPhase = false
         Self.saveConfigToDisk(config)
         tickLocked()
         let telemetry = PowerTelemetryReader.read()
@@ -114,11 +143,25 @@ final class PowerControlEngine: @unchecked Sendable {
       case .uninstallCleanup:
         config.mode = .automatic
         config.ledMode = .automatic
+        config.topUpTo100Active = false
         Self.saveConfigToDisk(config)
-        if let baseline, let client = try? AppleSMCClient() {
-          lastWriteResults = client.restoreBaseline(baseline)
+        if let client = try? AppleSMCClient() {
+          if let baseline {
+            lastWriteResults = client.restoreBaseline(baseline)
+          }
+          _ = setAdapterSuspend(client: client, suspend: false)
+          _ = recordWrite(client: client, key: "ACLC", bytes: [0x00])
         }
+        _ = PowerUIBridge.shared.disableChargeLimit()
         hasDirtySMCChanges = false
+        hasDirtyPowerUIChanges = false
+        lastAppliedPowerUILimit = nil
+        lastAppliedPowerUITopUp = false
+        lastAppliedLED = .automatic
+        activeMethod = .automaticOS
+        effectiveReason = "macOS otomatik güç yönetimi devrede"
+        appliedTargetWatts = nil
+        currentDutyRatio = nil
         let telemetry = PowerTelemetryReader.read()
         return makeResponse(ok: true, telemetry: telemetry, diagnostics: [], error: nil)
       }
@@ -133,11 +176,8 @@ final class PowerControlEngine: @unchecked Sendable {
     let now = Date()
     let telemetry = PowerTelemetryReader.read(now: now)
 
-    if telemetry.batteryChargeWatts > observedPeakWatts && telemetry.isCharging {
-      observedPeakWatts = telemetry.batteryChargeWatts
-    }
-    if telemetry.adapterRatingWatts > 0 {
-      observedPeakWatts = max(observedPeakWatts, Double(telemetry.adapterRatingWatts))
+    if !telemetry.isPluggedIn {
+      observedActiveChargeWatts = nil
     }
 
     let evaluation = ChargePolicyEvaluator.evaluate(
@@ -159,49 +199,84 @@ final class PowerControlEngine: @unchecked Sendable {
       return
     }
 
-    if baseline == nil {
-      let captured = client.captureBaseline()
-      baseline = captured
-      Self.saveBaselineToDisk(captured)
-    }
-
-    // LED kontrolü (yalnız değiştiğinde veya aktif müdahale sırasında)
-    applyLEDIfNeeded(client: client, mode: evaluation.effectiveLED)
+    ensureBaselineCaptured(client: client)
 
     switch evaluation.command {
     case .restoreAutomatic(let reason):
-      if hasDirtySMCChanges, let baseline {
-        lastWriteResults = client.restoreBaseline(baseline)
+      if hasDirtySMCChanges {
+        if let baseline {
+          lastWriteResults = client.restoreBaseline(baseline)
+        }
+        _ = setAdapterSuspend(client: client, suspend: false)
+        _ = recordWrite(client: client, key: "ACLC", bytes: [0x00])
         hasDirtySMCChanges = false
+        lastAppliedLED = .automatic
+      }
+      if hasDirtyPowerUIChanges {
+        restoreInitialPowerUIState()
       }
       activeMethod = .automaticOS
       effectiveReason = reason
       appliedTargetWatts = nil
       currentDutyRatio = nil
-      limitStartDate = nil
-      useMacroPulseFallback = false
-      closedLoopScale = 1.0
+      lastLimitTargetWatts = nil
+      observedActiveChargeWatts = nil
+      holdPhaseStartDate = nil
+      holdFallbackActiveThisPhase = false
 
     case .inhibitCharging(let reason):
       ensureBaselineCaptured(client: client)
-      hasDirtySMCChanges = true
-      let inhibitOK = setChargingInhibit(client: client, inhibit: true)
       _ = setAdapterSuspend(client: client, suspend: false)
-      activeMethod = inhibitOK ? .hardwareInhibit : .firmwareRestricted
-      effectiveReason =
-        inhibitOK
-        ? reason
-        : "\(reason) (Uyarı: Firmware şarj durdurma anahtarını reddetti)"
+      lastLimitTargetWatts = nil
+      holdPhaseStartDate = nil
+      holdFallbackActiveThisPhase = false
+
+      if PowerUIBridge.shared.isSupported {
+        let holdRes = applyPowerUIHoldCached(
+          percent: telemetry.batteryPercent,
+          isCharging: telemetry.isCharging
+        )
+        if case .success = holdRes {
+          activeMethod = .powerUIPassthrough
+          effectiveReason = reason
+        } else if telemetry.batteryPercent >= 20 {
+          hasDirtySMCChanges = true
+          let suspendOK = setAdapterSuspend(client: client, suspend: true)
+          activeMethod = suspendOK ? .adapterSuspend : .firmwareRestricted
+          effectiveReason =
+            suspendOK
+            ? reason
+            : "\(reason) (Uyarı: PowerUI ve firmware şarj durdurmayı reddetti)"
+        } else {
+          activeMethod = .firmwareRestricted
+          effectiveReason = "\(reason) (Uyarı: PowerUI şarj durdurmayı reddetti)"
+        }
+      } else {
+        let inhibitOK = setChargingInhibit(client: client, inhibit: true)
+        if inhibitOK {
+          hasDirtySMCChanges = true
+          activeMethod = .hardwareInhibit
+          effectiveReason = reason
+        } else if telemetry.batteryPercent >= 20 {
+          hasDirtySMCChanges = true
+          let suspendOK = setAdapterSuspend(client: client, suspend: true)
+          activeMethod = suspendOK ? .adapterSuspend : .firmwareRestricted
+          effectiveReason =
+            suspendOK
+            ? reason
+            : "\(reason) (Uyarı: Firmware şarj durdurma anahtarını reddetti)"
+        } else {
+          activeMethod = .firmwareRestricted
+          effectiveReason = "\(reason) (Uyarı: Firmware şarj durdurma anahtarını reddetti)"
+        }
+      }
       appliedTargetWatts = 0
       currentDutyRatio = 0.0
-      limitStartDate = nil
-      useMacroPulseFallback = false
 
     case .forceDischarge(let untilPercent, let reason):
       ensureBaselineCaptured(client: client)
       hasDirtySMCChanges = true
       let suspendOK = setAdapterSuspend(client: client, suspend: true)
-      _ = setChargingInhibit(client: client, inhibit: true)
       activeMethod = suspendOK ? .adapterSuspend : .firmwareRestricted
       effectiveReason =
         suspendOK
@@ -209,102 +284,202 @@ final class PowerControlEngine: @unchecked Sendable {
         : "Firmware adaptör kesme anahtarını (CHIE) kabul etmedi"
       appliedTargetWatts = 0
       currentDutyRatio = nil
-      limitStartDate = nil
-      useMacroPulseFallback = false
+      lastLimitTargetWatts = nil
+      holdPhaseStartDate = nil
+      holdFallbackActiveThisPhase = false
 
-    case .limitWatts(let watts, let scope, let maxPercent, let hysteresis, let reason):
+    case .limitWatts(let watts, let scope, let maxPercent, _, let reason):
       ensureBaselineCaptured(client: client)
-      hasDirtySMCChanges = true
-      _ = setAdapterSuspend(client: client, suspend: false)
-
-      // Tavan anahtarı (CHLT) güncelle
-      if maxPercent < 100 {
-        recordWrite(
-          client: client, key: "CHLT",
-          bytes: [UInt8(maxPercent), UInt8(hysteresis), UInt8(hysteresis)])
-      } else if let origCHLT = baseline?.keys["CHLT"] {
-        recordWrite(client: client, key: "CHLT", bytes: origCHLT)
-      }
-
-      if lastLimitTargetWatts != watts {
-        lastLimitTargetWatts = watts
-        limitStartDate = now
-        useMacroPulseFallback = false
-        closedLoopScale = 1.0
-      } else if limitStartDate == nil {
-        limitStartDate = now
-      }
 
       let measuredWatts =
         scope == .batteryNetWatts
         ? telemetry.batteryChargeWatts
-        : (telemetry.systemInputWatts > 0
-          ? telemetry.systemInputWatts : telemetry.batteryChargeWatts + telemetry.systemLoadWatts)
-
-      // Kapalı çevrim ince ayar (yalnız şarj aktifken ve darbe yedek modunda değilken)
-      if !useMacroPulseFallback && telemetry.isPluggedIn && telemetry.isCharging && measuredWatts > 0.5 {
-        let ratio = Double(watts) / measuredWatts
-        if ratio < 0.90 || ratio > 1.12 {
-          let adjusted = closedLoopScale * (0.6 + 0.4 * ratio)
-          closedLoopScale = min(max(adjusted, 0.30), 1.45)
-        }
-      }
-
-      let anyDirectWriteOK = applyDirectWattLimitKeys(
-        client: client,
-        targetWatts: watts,
-        scope: scope,
-        telemetry: telemetry,
-        scale: closedLoopScale
+        : max(telemetry.systemInputWatts, telemetry.batteryChargeWatts + telemetry.systemLoadWatts)
+      let fallbackEstimate = max(
+        Double(telemetry.adapterRatingWatts > 0 ? telemetry.adapterRatingWatts : 30)
+          - telemetry.systemLoadWatts,
+        18.0
       )
+      let currentActiveWatts = observedActiveChargeWatts ?? fallbackEstimate
 
-      // 8 saniye sonra gerçek ölçüm hedefin çok üstünde kaldıysa veya doğrudan anahtarlar reddedildiyse
-      let elapsed = now.timeIntervalSince(limitStartDate ?? now)
-      let exceedsTarget =
-        telemetry.isPluggedIn && telemetry.isCharging
-        && measuredWatts > (Double(watts) * 1.30 + 2.0)
+      if Double(watts) >= currentActiveWatts * 0.95 {
+        _ = setAdapterSuspend(client: client, suspend: false)
+        holdPhaseStartDate = nil
+        holdFallbackActiveThisPhase = false
 
-      if !useMacroPulseFallback && elapsed >= 8.0 && (!anyDirectWriteOK || exceedsTarget) {
-        if config.allowDutyCycleFallback {
-          useMacroPulseFallback = true
-          pulseWindowStart = now
+        if telemetry.isPluggedIn && telemetry.isCharging && measuredWatts > 2.0 {
+          observedActiveChargeWatts = 0.7 * currentActiveWatts + 0.3 * measuredWatts
         }
-      }
 
-      if useMacroPulseFallback {
-        let peak = max(observedPeakWatts, Double(telemetry.adapterRatingWatts), Double(watts) * 1.5, 20.0)
-        let rawDuty = Double(watts) / peak
-        let duty = min(max(rawDuty, 0.12), 0.92)
+        let targetLimit = config.topUpTo100Active ? 100 : maxPercent
+        let limitRes = applyPowerUILimitCached(targetLimit, topUp: config.topUpTo100Active)
+        let displayMax = Int((observedActiveChargeWatts ?? currentActiveWatts).rounded())
+
+        if case .success = limitRes {
+          activeMethod = .powerUIMacroPulse
+          effectiveReason = "\(reason) · Tam Kapasite (Maks ~\(displayMax)W)"
+        } else {
+          activeMethod = .firmwareRestricted
+          effectiveReason = "\(reason) · PowerUI şarj limiti uygulanamadı"
+        }
+        currentDutyRatio = 1.0
+        appliedTargetWatts = watts
+      } else {
         let windowSeconds = 60.0
+        let duty = min(max(Double(watts) / max(currentActiveWatts, 5.0), 0.10), 0.92)
+        let onSeconds = max(6.0, min(windowSeconds - 6.0, (windowSeconds * duty).rounded()))
+
+        if lastLimitTargetWatts != watts {
+          lastLimitTargetWatts = watts
+          pulseWindowStart = now
+          holdPhaseStartDate = nil
+          holdFallbackActiveThisPhase = false
+        }
+
         var phase = now.timeIntervalSince(pulseWindowStart)
-        if phase >= windowSeconds {
+        if phase >= windowSeconds || phase < 0 {
           pulseWindowStart = now
           phase = 0
+          holdPhaseStartDate = nil
+          holdFallbackActiveThisPhase = false
         }
-        let onSeconds = max(6.0, min(windowSeconds - 6.0, windowSeconds * duty))
-        let allowChargeNow = phase < onSeconds
-        let chilOK = setChargingInhibit(client: client, inhibit: !allowChargeNow)
-        activeMethod = chilOK ? .macroPulseModulation : .firmwareRestricted
+
+        if phase < onSeconds {
+          holdPhaseStartDate = nil
+          holdFallbackActiveThisPhase = false
+          _ = setAdapterSuspend(client: client, suspend: false)
+
+          if telemetry.isPluggedIn && telemetry.isCharging && measuredWatts > 2.0 {
+            observedActiveChargeWatts = 0.7 * currentActiveWatts + 0.3 * measuredWatts
+          }
+
+          let targetLimit = config.topUpTo100Active ? 100 : maxPercent
+          let limitRes = applyPowerUILimitCached(targetLimit, topUp: config.topUpTo100Active)
+          if case .success = limitRes {
+            activeMethod = .powerUIMacroPulse
+          } else if config.allowDutyCycleFallback && telemetry.batteryPercent >= 20 {
+            activeMethod = .macroPulseModulation
+          } else {
+            activeMethod = .firmwareRestricted
+          }
+        } else {
+          if holdPhaseStartDate == nil {
+            holdPhaseStartDate = now
+          }
+
+          if holdFallbackActiveThisPhase {
+            hasDirtySMCChanges = true
+            let suspendOK = setAdapterSuspend(client: client, suspend: true)
+            activeMethod = suspendOK ? .macroPulseModulation : .firmwareRestricted
+          } else {
+            _ = setAdapterSuspend(client: client, suspend: false)
+            let holdRes = applyPowerUIHoldCached(
+              percent: telemetry.batteryPercent,
+              isCharging: telemetry.isCharging
+            )
+            let holdFailed: Bool
+            if case .failure = holdRes {
+              holdFailed = true
+            } else {
+              holdFailed = false
+            }
+
+            let holdElapsed = now.timeIntervalSince(holdPhaseStartDate ?? now)
+            let shouldUseCHIE =
+              (holdFailed || (holdElapsed >= 6.0 && telemetry.isCharging && telemetry.batteryChargeWatts > 2.0))
+              && config.allowDutyCycleFallback
+              && telemetry.batteryPercent >= 20
+
+            if shouldUseCHIE {
+              holdFallbackActiveThisPhase = true
+              hasDirtySMCChanges = true
+              let suspendOK = setAdapterSuspend(client: client, suspend: true)
+              activeMethod = suspendOK ? .macroPulseModulation : .firmwareRestricted
+            } else if holdFailed {
+              activeMethod = .firmwareRestricted
+            } else {
+              activeMethod = .powerUIMacroPulse
+            }
+          }
+        }
+
         currentDutyRatio = duty
         appliedTargetWatts = watts
         effectiveReason =
-          chilOK
-          ? "\(reason) · Darbe %\(Int((duty * 100).rounded())) (\(Int(onSeconds))sn açık / \(Int(windowSeconds - onSeconds))sn beklet)"
-          : "Firmware hem akım sınırlama hem CHIL anahtarlarını kısıtladı"
-      } else {
-        _ = setChargingInhibit(client: client, inhibit: false)
-        activeMethod = anyDirectWriteOK ? .directSMCHardware : .firmwareRestricted
-        currentDutyRatio = nil
-        appliedTargetWatts = watts
-        effectiveReason =
-          anyDirectWriteOK
-          ? reason
-          : "Firmware akım/güç anahtarlarını salt-okunur tutuyor"
+          "\(reason) · Ortalama \(watts)W (%100 sıfır-deşarj darbe %\(Int((duty * 100).rounded())), \(Int(onSeconds))sn şarj / \(Int(windowSeconds - onSeconds))sn 0W passthrough)"
       }
     }
+
+    // LED kontrolü (yalnız değiştiğinde veya aktif müdahale sırasında)
+    applyLEDIfNeeded(client: client, mode: evaluation.effectiveLED)
+  }
+
+  private func restoreInitialPowerUIState() {
+    if initialPowerUIState.isEnabled && initialPowerUIState.currentLimit < 100 {
+      _ = PowerUIBridge.shared.setExactChargeLimit(initialPowerUIState.currentLimit)
+    } else {
+      _ = PowerUIBridge.shared.disableChargeLimit()
+    }
+    hasDirtyPowerUIChanges = false
+    lastAppliedPowerUILimit = nil
+    lastAppliedPowerUITopUp = false
+  }
+
+  private func applyPowerUILimitCached(_ limit: Int, topUp: Bool) -> Result<Void, Error> {
+    guard PowerUIBridge.shared.isSupported else {
+      return .failure(
+        NSError(
+          domain: "WattWhatPowerUI",
+          code: -1,
+          userInfo: [NSLocalizedDescriptionKey: "PowerUI şarj limiti bu cihazda desteklenmiyor."]
+        ))
+    }
+    let targetLimit = topUp ? 100 : min(max(limit, 1), 100)
+    if lastAppliedPowerUILimit == targetLimit && lastAppliedPowerUITopUp == topUp {
+      return .success(())
+    }
+    let result: Result<Void, Error>
+    if topUp {
+      result = PowerUIBridge.shared.enableTemporaryTopUpTo100()
+    } else if targetLimit >= 100 {
+      result = PowerUIBridge.shared.disableChargeLimit()
+    } else {
+      result = PowerUIBridge.shared.setExactChargeLimit(targetLimit)
+    }
+    if case .success = result {
+      lastAppliedPowerUILimit = targetLimit
+      lastAppliedPowerUITopUp = topUp
+      hasDirtyPowerUIChanges = true
+    }
+    return result
+  }
+
+  private func applyPowerUIHoldCached(percent: Double, isCharging: Bool) -> Result<Void, Error> {
+    guard PowerUIBridge.shared.isSupported else {
+      return .failure(
+        NSError(
+          domain: "WattWhatPowerUI",
+          code: -1,
+          userInfo: [NSLocalizedDescriptionKey: "PowerUI şarj limiti bu cihazda desteklenmiyor."]
+        ))
+    }
+    let holdTarget = min(max(Int(percent.rounded(.down)), 10), 99)
+    if lastAppliedPowerUILimit == holdTarget && !lastAppliedPowerUITopUp && !isCharging {
+      return .success(())
+    }
+    let result = PowerUIBridge.shared.holdChargingNow(currentBatteryPercent: percent)
+    if case .success = result {
+      lastAppliedPowerUILimit = holdTarget
+      lastAppliedPowerUITopUp = false
+      hasDirtyPowerUIChanges = true
+    }
+    return result
   }
 
   private func ensureBaselineCaptured(client: AppleSMCClient) {
+    if let existing = baseline, AppleSMCClient.baselineContainsLegacyReadOnlyKeys(existing) {
+      baseline = nil
+    }
     if baseline == nil {
       let captured = client.captureBaseline()
       baseline = captured
@@ -315,11 +490,7 @@ final class PowerControlEngine: @unchecked Sendable {
   private func applyLEDIfNeeded(client: AppleSMCClient, mode: MagSafeLEDMode) {
     if mode == .automatic {
       if lastAppliedLED != nil && lastAppliedLED != .automatic {
-        if let orig = baseline?.keys["ACLC"] {
-          recordWrite(client: client, key: "ACLC", bytes: orig)
-        } else {
-          recordWrite(client: client, key: "ACLC", bytes: [0x00])
-        }
+        recordWrite(client: client, key: "ACLC", bytes: [0x00])
       }
       lastAppliedLED = .automatic
       return
@@ -331,6 +502,11 @@ final class PowerControlEngine: @unchecked Sendable {
   @discardableResult
   private func recordWrite(client: AppleSMCClient, key: String, bytes: [UInt8]) -> Bool {
     do {
+      let info = try client.keyInfo(for: key)
+      guard (info.attributes & 0x40) != 0 else {
+        lastWriteResults[key] = "Atlandı (salt-okunur)"
+        return false
+      }
       try client.writeKey(key, bytes: bytes)
       lastWriteResults[key] = "OK"
       return true
@@ -356,57 +532,6 @@ final class PowerControlEngine: @unchecked Sendable {
 
   private func setAdapterSuspend(client: AppleSMCClient, suspend: Bool) -> Bool {
     recordWrite(client: client, key: "CHIE", bytes: [suspend ? 0x08 : 0x00])
-  }
-
-  private func applyDirectWattLimitKeys(
-    client: AppleSMCClient,
-    targetWatts: Int,
-    scope: WattTargetScope,
-    telemetry: LivePowerTelemetry,
-    scale: Double
-  ) -> Bool {
-    var anyOK = false
-    let battV = telemetry.batteryVoltage_V > 5.0 ? telemetry.batteryVoltage_V : 12.6
-    let adapterV = telemetry.adapterVoltage_V > 4.0 ? telemetry.adapterVoltage_V : 20.0
-    let sysLoad = max(telemetry.systemLoadWatts, 3.0)
-
-    let effectiveBattWatts: Double
-    let effectiveAdapterWatts: Double
-    switch scope {
-    case .batteryNetWatts:
-      effectiveBattWatts = Double(targetWatts) * scale
-      effectiveAdapterWatts = effectiveBattWatts + sysLoad + 1.0
-    case .adapterInputWatts:
-      effectiveAdapterWatts = Double(targetWatts) * scale
-      effectiveBattWatts = max(effectiveAdapterWatts - sysLoad - 0.5, 2.0)
-    }
-
-    let targetBatt_mA = UInt32(min(max(Int((effectiveBattWatts / battV) * 1_000.0), 250), 6000))
-    let targetAdapter_mW = UInt32(min(max(Int((effectiveAdapterWatts * 1_000.0).rounded()), 5_000), 140_000))
-    let targetAdapter_mA = UInt32(
-      min(max(Int(((effectiveAdapterWatts / adapterV) * 1_000.0).rounded()), 300), 5000))
-
-    for key in ["BTIL", "BTSI"] {
-      if recordWrite(client: client, key: key, bytes: AppleSMCClient.encodeUInt32LE(targetBatt_mA)) {
-        anyOK = true
-      }
-    }
-
-    if recordWrite(client: client, key: "CIPW", bytes: AppleSMCClient.encodeUInt32LE(targetAdapter_mW)) {
-      anyOK = true
-    }
-    let ratioByte: UInt8 =
-      telemetry.adapterRatingWatts > 0
-      ? UInt8(min(max(Int((effectiveAdapterWatts / Double(telemetry.adapterRatingWatts)) * 100.0), 10), 100))
-      : 0xFF
-    _ = recordWrite(client: client, key: "CIPR", bytes: [ratioByte])
-
-    for key in ["CIPI", "CHAS", "CHA1", "CHA2", "CHAI", "CHI1", "CHI2", "ACLM"] {
-      if recordWrite(client: client, key: key, bytes: AppleSMCClient.encodeUInt32LE(targetAdapter_mA)) {
-        anyOK = true
-      }
-    }
-    return anyOK
   }
 
   private func applySystemLowPowerMode(enabled: Bool) -> Bool {
@@ -523,6 +648,10 @@ final class SocketServer {
   }
 
   private func handleClient(_ clientFD: Int32) {
+    var tv = timeval(tv_sec: 2, tv_usec: 0)
+    setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    setsockopt(clientFD, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
     var peerUID: uid_t = 0
     var peerGID: gid_t = 0
     if getpeereid(clientFD, &peerUID, &peerGID) == 0 {
@@ -538,8 +667,10 @@ final class SocketServer {
       let count = Darwin.recv(clientFD, &buffer, buffer.count, 0)
       if count <= 0 { break }
       received.append(buffer, count: count)
+      if received.count > 65_536 { break }
       if buffer[0..<count].contains(0x0A) { break }
     }
+    if received.count > 65_536 { return }
     if let newline = received.firstIndex(of: 0x0A) {
       received = received[..<newline]
     }
@@ -605,16 +736,25 @@ if args.contains("--daemon") {
   signal(SIGPIPE, SIG_IGN)
   let engine = PowerControlEngine()
   signal(SIGTERM, SIG_IGN)
-  let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
-  termSource.setEventHandler {
+  signal(SIGINT, SIG_IGN)
+  let shutdownHandler: () -> Void = {
+    engine.restoreBaselineOnShutdown()
     unlink(HelperConstants.socketPath)
     exit(0)
   }
+  let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+  termSource.setEventHandler(handler: shutdownHandler)
   termSource.resume()
+
+  let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+  intSource.setEventHandler(handler: shutdownHandler)
+  intSource.resume()
 
   engine.startLoop()
   let server = SocketServer(engine: engine)
-  server.run()
+  withExtendedLifetime((termSource, intSource)) {
+    server.run()
+  }
 }
 
 print("Kullanım: wattwhat-helper [--daemon | --probe-readonly | --restore-baseline]")
