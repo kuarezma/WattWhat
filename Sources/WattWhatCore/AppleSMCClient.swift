@@ -1,31 +1,54 @@
 import Foundation
 import IOKit
 
-struct SMCKeyDiagnostic: Codable, Equatable, Identifiable, Sendable {
-  var id: String { key }
-  let key: String
-  let dataType: String
-  let dataSize: UInt32
-  let attributes: UInt8
-  let currentHex: String
-  let numericSummary: String
-  let lastWriteResult: String?
+public struct SMCKeyDiagnostic: Codable, Equatable, Identifiable, Sendable {
+  public var id: String { key }
+  public let key: String
+  public let dataType: String
+  public let dataSize: UInt32
+  public let attributes: UInt8
+  public let currentHex: String
+  public let numericSummary: String
+  public let lastWriteResult: String?
 
-  var isWritableFlag: Bool {
+  public init(
+    key: String,
+    dataType: String,
+    dataSize: UInt32,
+    attributes: UInt8,
+    currentHex: String,
+    numericSummary: String,
+    lastWriteResult: String?
+  ) {
+    self.key = key
+    self.dataType = dataType
+    self.dataSize = dataSize
+    self.attributes = attributes
+    self.currentHex = currentHex
+    self.numericSummary = numericSummary
+    self.lastWriteResult = lastWriteResult
+  }
+
+  public var isWritableFlag: Bool {
     (attributes & 0x40) != 0
   }
 
-  var isReadableFlag: Bool {
+  public var isReadableFlag: Bool {
     (attributes & 0x80) != 0
   }
 }
 
-struct SMCBaselineSnapshot: Codable, Equatable, Sendable {
-  let capturedAt: Date
-  var keys: [String: [UInt8]]
+public struct SMCBaselineSnapshot: Codable, Equatable, Sendable {
+  public let capturedAt: Date
+  public var keys: [String: [UInt8]]
+
+  public init(capturedAt: Date, keys: [String: [UInt8]]) {
+    self.capturedAt = capturedAt
+    self.keys = keys
+  }
 }
 
-enum AppleSMCError: Error, LocalizedError, Sendable {
+public enum AppleSMCError: Error, LocalizedError, Sendable {
   case serviceNotFound
   case openFailed(kern_return_t)
   case callFailed(key: String, kernReturn: kern_return_t, smcResult: UInt8)
@@ -33,7 +56,7 @@ enum AppleSMCError: Error, LocalizedError, Sendable {
   case keyNotReadable(String)
   case invalidDataSize(key: String, expected: UInt32, actual: Int)
 
-  var errorDescription: String? {
+  public var errorDescription: String? {
     switch self {
     case .serviceNotFound:
       return "AppleSMC servisi bulunamadı."
@@ -51,50 +74,58 @@ enum AppleSMCError: Error, LocalizedError, Sendable {
   }
 }
 
-final class AppleSMCClient: @unchecked Sendable {
-  struct SMCKeyDataVersion {
-    var major: UInt8 = 0
-    var minor: UInt8 = 0
-    var build: UInt8 = 0
-    var reserved: UInt8 = 0
-    var release: UInt16 = 0
+public final class AppleSMCClient: @unchecked Sendable {
+  public struct SMCKeyDataVersion {
+    public var major: UInt8 = 0
+    public var minor: UInt8 = 0
+    public var build: UInt8 = 0
+    public var reserved: UInt8 = 0
+    public var release: UInt16 = 0
+
+    public init() {}
   }
 
-  struct SMCPLimitData {
-    var version: UInt16 = 0
-    var length: UInt16 = 0
-    var cpuPLimit: UInt32 = 0
-    var gpuPLimit: UInt32 = 0
-    var memPLimit: UInt32 = 0
+  public struct SMCPLimitData {
+    public var version: UInt16 = 0
+    public var length: UInt16 = 0
+    public var cpuPLimit: UInt32 = 0
+    public var gpuPLimit: UInt32 = 0
+    public var memPLimit: UInt32 = 0
+
+    public init() {}
   }
 
-  struct SMCKeyInfoData {
-    var dataSize: UInt32 = 0
-    var dataType: UInt32 = 0
-    var dataAttributes: UInt8 = 0
+  public struct SMCKeyInfoData {
+    public var dataSize: UInt32 = 0
+    public var dataType: UInt32 = 0
+    public var dataAttributes: UInt8 = 0
+
+    public init() {}
   }
 
-  typealias SMCBytes = (
+  public typealias SMCBytes = (
     UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
     UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
     UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
     UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8
   )
 
-  struct SMCKeyData {
-    var key: UInt32 = 0
-    var vers = SMCKeyDataVersion()
-    var pLimitData = SMCPLimitData()
-    var keyInfo = SMCKeyInfoData()
-    var padding: UInt16 = 0
-    var result: UInt8 = 0
-    var status: UInt8 = 0
-    var data8: UInt8 = 0
-    var data32: UInt32 = 0
-    var bytes: SMCBytes = (
+  public struct SMCKeyData {
+    public var key: UInt32 = 0
+    public var vers = SMCKeyDataVersion()
+    public var pLimitData = SMCPLimitData()
+    public var keyInfo = SMCKeyInfoData()
+    public var padding: UInt16 = 0
+    public var result: UInt8 = 0
+    public var status: UInt8 = 0
+    public var data8: UInt8 = 0
+    public var data32: UInt32 = 0
+    public var bytes: SMCBytes = (
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     )
+
+    public init() {}
   }
 
   private static let kSMCUserClientOpen: UInt32 = 0
@@ -105,7 +136,7 @@ final class AppleSMCClient: @unchecked Sendable {
   private static let kSMCGetKeyInfo: UInt8 = 9
 
   /// M1/M2/M3 Apple Silicon cihazlarda ilgili şarj/güç SMC anahtarları.
-  static let knownPowerAndChargerKeys: [String] = [
+  public static let knownPowerAndChargerKeys: [String] = [
     "BTIL", "BTSI", "BTVL", "BTSV",
     "CIPW", "CIPR", "CIPI", "CIPP", "CIPV", "CIP0", "CIPC",
     "CHAS", "CHA1", "CHA2", "CHAI",
@@ -116,14 +147,14 @@ final class AppleSMCClient: @unchecked Sendable {
     "bfG0", "bfI0", "bfJ0", "bfK0", "bfL0",
   ]
 
-  static let controlledKeysForBaseline: [String] = [
+  public static let controlledKeysForBaseline: [String] = [
     "CHIE", "D1BI", "D2BI", "D3BI",
   ]
 
   private var connection: io_connect_t = 0
   private var service: io_service_t = 0
 
-  init() throws {
+  public init() throws {
     let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
     guard svc != 0 else {
       throw AppleSMCError.serviceNotFound
@@ -147,11 +178,11 @@ final class AppleSMCClient: @unchecked Sendable {
     }
   }
 
-  static func toFourCC(_ key: String) -> UInt32 {
+  public static func toFourCC(_ key: String) -> UInt32 {
     key.utf8.prefix(4).reduce(0) { ($0 << 8) | UInt32($1) }
   }
 
-  static func fromFourCC(_ value: UInt32) -> String {
+  public static func fromFourCC(_ value: UInt32) -> String {
     let bytes = [24, 16, 8, 0].map { UInt8((value >> $0) & 0xFF) }
     return String(bytes.map { byte in
       let scalar = UnicodeScalar(byte)
@@ -159,7 +190,7 @@ final class AppleSMCClient: @unchecked Sendable {
     })
   }
 
-  static func encodeUInt32LE(_ value: UInt32) -> [UInt8] {
+  public static func encodeUInt32LE(_ value: UInt32) -> [UInt8] {
     [
       UInt8(value & 0xFF),
       UInt8((value >> 8) & 0xFF),
@@ -168,7 +199,7 @@ final class AppleSMCClient: @unchecked Sendable {
     ]
   }
 
-  static func decodeUInt32LE(_ bytes: [UInt8]) -> UInt32? {
+  public static func decodeUInt32LE(_ bytes: [UInt8]) -> UInt32? {
     guard bytes.count >= 4 else { return nil }
     return UInt32(bytes[0])
       | (UInt32(bytes[1]) << 8)
@@ -176,21 +207,21 @@ final class AppleSMCClient: @unchecked Sendable {
       | (UInt32(bytes[3]) << 24)
   }
 
-  static func encodeUInt16LE(_ value: UInt16) -> [UInt8] {
+  public static func encodeUInt16LE(_ value: UInt16) -> [UInt8] {
     [UInt8(value & 0xFF), UInt8((value >> 8) & 0xFF)]
   }
 
-  static func decodeUInt16LE(_ bytes: [UInt8]) -> UInt16? {
+  public static func decodeUInt16LE(_ bytes: [UInt8]) -> UInt16? {
     guard bytes.count >= 2 else { return nil }
     return UInt16(bytes[0]) | (UInt16(bytes[1]) << 8)
   }
 
-  static func decodeFloatLE(_ bytes: [UInt8]) -> Float? {
+  public static func decodeFloatLE(_ bytes: [UInt8]) -> Float? {
     guard let bits = decodeUInt32LE(bytes) else { return nil }
     return Float(bitPattern: bits)
   }
 
-  static func formatNumericSummary(dataType: String, bytes: [UInt8]) -> String {
+  public static func formatNumericSummary(dataType: String, bytes: [UInt8]) -> String {
     let trimmed = dataType.trimmingCharacters(in: .whitespaces)
     switch trimmed {
     case "ui8", "flag":
@@ -221,7 +252,7 @@ final class AppleSMCClient: @unchecked Sendable {
     )
   }
 
-  func keyInfo(for key: String) throws -> (dataSize: UInt32, dataType: String, attributes: UInt8) {
+  public func keyInfo(for key: String) throws -> (dataSize: UInt32, dataType: String, attributes: UInt8) {
     var input = SMCKeyData()
     var output = SMCKeyData()
     input.key = Self.toFourCC(key)
@@ -243,7 +274,7 @@ final class AppleSMCClient: @unchecked Sendable {
     )
   }
 
-  func readKey(_ key: String) throws -> (bytes: [UInt8], dataType: String, attributes: UInt8) {
+  public func readKey(_ key: String) throws -> (bytes: [UInt8], dataType: String, attributes: UInt8) {
     let info = try keyInfo(for: key)
     guard (info.attributes & 0x80) != 0 else {
       throw AppleSMCError.keyNotReadable(key)
@@ -266,7 +297,7 @@ final class AppleSMCClient: @unchecked Sendable {
     return (bytes: bytes, dataType: info.dataType, attributes: info.attributes)
   }
 
-  func writeKey(_ key: String, bytes: [UInt8]) throws {
+  public func writeKey(_ key: String, bytes: [UInt8]) throws {
     let info = try keyInfo(for: key)
     guard info.dataSize > 0, bytes.count == Int(info.dataSize) else {
       throw AppleSMCError.invalidDataSize(key: key, expected: info.dataSize, actual: bytes.count)
@@ -287,15 +318,15 @@ final class AppleSMCClient: @unchecked Sendable {
     }
   }
 
-  func writeUInt32LE(_ key: String, value: UInt32) throws {
+  public func writeUInt32LE(_ key: String, value: UInt32) throws {
     try writeKey(key, bytes: Self.encodeUInt32LE(value))
   }
 
-  func writeUInt8(_ key: String, value: UInt8) throws {
+  public func writeUInt8(_ key: String, value: UInt8) throws {
     try writeKey(key, bytes: [value])
   }
 
-  func readUInt32LE(_ key: String) throws -> UInt32 {
+  public func readUInt32LE(_ key: String) throws -> UInt32 {
     let result = try readKey(key)
     guard let decoded = Self.decodeUInt32LE(result.bytes) else {
       throw AppleSMCError.invalidDataSize(key: key, expected: 4, actual: result.bytes.count)
@@ -303,7 +334,7 @@ final class AppleSMCClient: @unchecked Sendable {
     return decoded
   }
 
-  func captureBaseline(keys: [String] = AppleSMCClient.controlledKeysForBaseline) -> SMCBaselineSnapshot {
+  public func captureBaseline(keys: [String] = AppleSMCClient.controlledKeysForBaseline) -> SMCBaselineSnapshot {
     var map: [String: [UInt8]] = [:]
     for key in keys {
       guard let info = try? keyInfo(for: key), (info.attributes & 0xc0) == 0xc0 else {
@@ -316,7 +347,7 @@ final class AppleSMCClient: @unchecked Sendable {
     return SMCBaselineSnapshot(capturedAt: Date(), keys: map)
   }
 
-  func restoreBaseline(_ snapshot: SMCBaselineSnapshot) -> [String: String] {
+  public func restoreBaseline(_ snapshot: SMCBaselineSnapshot) -> [String: String] {
     var results: [String: String] = [:]
     for (key, bytes) in snapshot.keys {
       do {
@@ -343,11 +374,11 @@ final class AppleSMCClient: @unchecked Sendable {
     return results
   }
 
-  static func baselineContainsLegacyReadOnlyKeys(_ snapshot: SMCBaselineSnapshot) -> Bool {
+  public static func baselineContainsLegacyReadOnlyKeys(_ snapshot: SMCBaselineSnapshot) -> Bool {
     snapshot.keys.keys.contains(where: { ["BTIL", "CHIL", "CHCE", "CIPW", "ACLC"].contains($0) })
   }
 
-  static func probeReadableChargerKeys(lastWriteResults: [String: String] = [:]) -> [SMCKeyDiagnostic] {
+  public static func probeReadableChargerKeys(lastWriteResults: [String: String] = [:]) -> [SMCKeyDiagnostic] {
     guard let client = try? AppleSMCClient() else { return [] }
     return knownPowerAndChargerKeys.compactMap { key in
       guard let info = try? client.keyInfo(for: key) else { return nil }

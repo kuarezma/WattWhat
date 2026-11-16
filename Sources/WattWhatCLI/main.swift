@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(WattWhatCore)
+import WattWhatCore
+#endif
+
 private func printUsage() {
   print("""
   WattWhat Şarj & Güç Kontrol CLI (wattctl v\(HelperConstants.protocolVersion))

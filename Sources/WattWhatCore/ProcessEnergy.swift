@@ -9,53 +9,101 @@ private func procPIDResourceUsage(
   _ buffer: UnsafeMutableRawPointer
 ) -> Int32
 
-struct ProcessIdentity: Hashable {
-  let pid: Int32
-  let startTime: UInt64
+public struct ProcessIdentity: Hashable, Sendable {
+  public let pid: Int32
+  public let startTime: UInt64
+
+  public init(pid: Int32, startTime: UInt64) {
+    self.pid = pid
+    self.startTime = startTime
+  }
 }
 
-struct ProcessEnergySnapshot {
-  let identity: ProcessIdentity
-  let applicationName: String
-  let bundlePath: String
-  let processName: String
-  let energyNanojoules: UInt64
+public struct ProcessEnergySnapshot: Sendable {
+  public let identity: ProcessIdentity
+  public let applicationName: String
+  public let bundlePath: String
+  public let processName: String
+  public let energyNanojoules: UInt64
+
+  public init(
+    identity: ProcessIdentity,
+    applicationName: String,
+    bundlePath: String,
+    processName: String,
+    energyNanojoules: UInt64
+  ) {
+    self.identity = identity
+    self.applicationName = applicationName
+    self.bundlePath = bundlePath
+    self.processName = processName
+    self.energyNanojoules = energyNanojoules
+  }
 }
 
-struct ProcessPowerUsage: Equatable, Identifiable {
-  var id: String { processName }
-  let processName: String
-  let watts: Double
+public struct ProcessPowerUsage: Equatable, Identifiable, Sendable {
+  public var id: String { processName }
+  public let processName: String
+  public let watts: Double
+
+  public init(processName: String, watts: Double) {
+    self.processName = processName
+    self.watts = watts
+  }
 }
 
-struct ApplicationPowerUsage: Equatable, Identifiable {
-  var id: String { bundlePath.isEmpty ? applicationName : bundlePath }
-  let applicationName: String
-  let bundlePath: String
-  let watts: Double
-  let processes: [ProcessPowerUsage]
+public struct ApplicationPowerUsage: Equatable, Identifiable, Sendable {
+  public var id: String { bundlePath.isEmpty ? applicationName : bundlePath }
+  public let applicationName: String
+  public let bundlePath: String
+  public let watts: Double
+  public let processes: [ProcessPowerUsage]
+
+  public init(
+    applicationName: String,
+    bundlePath: String,
+    watts: Double,
+    processes: [ProcessPowerUsage]
+  ) {
+    self.applicationName = applicationName
+    self.bundlePath = bundlePath
+    self.watts = watts
+    self.processes = processes
+  }
 }
 
-struct ProcessEnergyMeasurement {
-  let usages: [ApplicationPowerUsage]
-  let interval: TimeInterval
-  let measuredProcessCount: Int
-  let eligibleProcessCount: Int
+public struct ProcessEnergyMeasurement: Sendable {
+  public let usages: [ApplicationPowerUsage]
+  public let interval: TimeInterval
+  public let measuredProcessCount: Int
+  public let eligibleProcessCount: Int
 
-  var attributedTotalWatts: Double { usages.reduce(0) { $0 + $1.watts } }
-  var coverage: Double {
+  public init(
+    usages: [ApplicationPowerUsage],
+    interval: TimeInterval,
+    measuredProcessCount: Int,
+    eligibleProcessCount: Int
+  ) {
+    self.usages = usages
+    self.interval = interval
+    self.measuredProcessCount = measuredProcessCount
+    self.eligibleProcessCount = eligibleProcessCount
+  }
+
+  public var attributedTotalWatts: Double { usages.reduce(0) { $0 + $1.watts } }
+  public var coverage: Double {
     guard eligibleProcessCount > 0 else { return 0 }
     return Double(measuredProcessCount) / Double(eligibleProcessCount)
   }
 }
 
-enum ProcessEnergySample {
+public enum ProcessEnergySample: Sendable {
   case warmingUp
   case unavailable
   case available(ProcessEnergyMeasurement)
 }
 
-enum ApplicationPowerCalculator {
+public enum ApplicationPowerCalculator {
   private struct ApplicationAccumulator {
     let applicationName: String
     let bundlePath: String
@@ -63,7 +111,7 @@ enum ApplicationPowerCalculator {
     var processEnergy: [String: UInt64] = [:]
   }
 
-  static func calculate(
+  public static func calculate(
     previous: [ProcessIdentity: ProcessEnergySnapshot],
     current: [ProcessIdentity: ProcessEnergySnapshot],
     interval: TimeInterval
@@ -117,19 +165,30 @@ enum ApplicationPowerCalculator {
   }
 }
 
-struct ProcessRecord {
-  let pid: Int32
-  let parentPID: Int32
-  let executablePath: String
+public struct ProcessRecord: Sendable {
+  public let pid: Int32
+  public let parentPID: Int32
+  public let executablePath: String
+
+  public init(pid: Int32, parentPID: Int32, executablePath: String) {
+    self.pid = pid
+    self.parentPID = parentPID
+    self.executablePath = executablePath
+  }
 }
 
-struct ApplicationDescriptor: Equatable {
-  let name: String
-  let bundlePath: String
+public struct ApplicationDescriptor: Equatable, Sendable {
+  public let name: String
+  public let bundlePath: String
+
+  public init(name: String, bundlePath: String) {
+    self.name = name
+    self.bundlePath = bundlePath
+  }
 }
 
-enum ApplicationNameResolver {
-  static func resolve(
+public enum ApplicationNameResolver {
+  public static func resolve(
     for process: ProcessRecord,
     processesByPID: [Int32: ProcessRecord]
   ) -> ApplicationDescriptor? {
@@ -143,7 +202,7 @@ enum ApplicationNameResolver {
     return nil
   }
 
-  static func application(from executablePath: String) -> ApplicationDescriptor? {
+  public static func application(from executablePath: String) -> ApplicationDescriptor? {
     let components = executablePath.split(separator: "/")
     guard let bundleIndex = components.firstIndex(where: { $0.lowercased().hasSuffix(".app") })
     else { return nil }
@@ -153,18 +212,20 @@ enum ApplicationNameResolver {
   }
 }
 
-final class ProcessEnergyMonitor {
+public final class ProcessEnergyMonitor {
   private var previousSnapshots: [ProcessIdentity: ProcessEnergySnapshot]?
   private var previousSampleDate: Date?
   private var pathCache: [Int32: String] = [:]
 
-  func reset() {
+  public init() {}
+
+  public func reset() {
     previousSnapshots = nil
     previousSampleDate = nil
     pathCache.removeAll()
   }
 
-  func sample(at now: Date = Date()) -> ProcessEnergySample {
+  public func sample(at now: Date = Date()) -> ProcessEnergySample {
     let collection = collectSnapshots()
     guard !collection.snapshots.isEmpty else { return .unavailable }
 

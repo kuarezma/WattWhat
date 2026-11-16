@@ -5,14 +5,20 @@ import ObjectiveC
 @_silgen_name("notify_post")
 private func darwinNotifyPost(_ name: UnsafePointer<CChar>) -> UInt32
 
-struct PowerUIState: Codable, Equatable, Sendable {
-  let isSupported: Bool
-  let isEnabled: Bool
-  let currentLimit: Int
+public struct PowerUIState: Codable, Equatable, Sendable {
+  public let isSupported: Bool
+  public let isEnabled: Bool
+  public let currentLimit: Int
+
+  public init(isSupported: Bool, isEnabled: Bool, currentLimit: Int) {
+    self.isSupported = isSupported
+    self.isEnabled = isEnabled
+    self.currentLimit = currentLimit
+  }
 }
 
-final class PowerUIBridge: @unchecked Sendable {
-  static let shared = PowerUIBridge()
+public final class PowerUIBridge: @unchecked Sendable {
+  public static let shared = PowerUIBridge()
 
   private static let frameworkPath =
     "/System/Library/PrivateFrameworks/PowerUI.framework/Versions/A/PowerUI"
@@ -59,7 +65,7 @@ final class PowerUIBridge: @unchecked Sendable {
     self.client = initIMP(allocated, initSel, "WattWhat" as NSString)?.takeRetainedValue()
   }
 
-  var isSupported: Bool {
+  public var isSupported: Bool {
     lock.lock()
     defer { lock.unlock() }
 
@@ -79,7 +85,7 @@ final class PowerUIBridge: @unchecked Sendable {
     return imp(client, sel)
   }
 
-  func readState() -> PowerUIState {
+  public func readState() -> PowerUIState {
     lock.lock()
     defer { lock.unlock() }
 
@@ -118,7 +124,7 @@ final class PowerUIBridge: @unchecked Sendable {
     return PowerUIState(isSupported: true, isEnabled: enabled, currentLimit: resolvedLimit)
   }
 
-  func setExactChargeLimit(_ limit: Int) -> Result<Void, Error> {
+  public func setExactChargeLimit(_ limit: Int) -> Result<Void, Error> {
     lock.lock()
     defer { lock.unlock() }
 
@@ -161,12 +167,12 @@ final class PowerUIBridge: @unchecked Sendable {
     return .success(())
   }
 
-  func holdChargingNow(currentBatteryPercent: Double) -> Result<Void, Error> {
+  public func holdChargingNow(currentBatteryPercent: Double) -> Result<Void, Error> {
     let holdTarget = min(max(Int(currentBatteryPercent.rounded(.down)), 10), 99)
     return setExactChargeLimit(holdTarget)
   }
 
-  func disableChargeLimit() -> Result<Void, Error> {
+  public func disableChargeLimit() -> Result<Void, Error> {
     lock.lock()
     defer { lock.unlock() }
 
@@ -190,7 +196,7 @@ final class PowerUIBridge: @unchecked Sendable {
     return callBoolWithError(client: client, selector: disableSel, impAddr: impAddr)
   }
 
-  func enableTemporaryTopUpTo100() -> Result<Void, Error> {
+  public func enableTemporaryTopUpTo100() -> Result<Void, Error> {
     lock.lock()
     defer { lock.unlock() }
 

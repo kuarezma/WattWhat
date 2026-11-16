@@ -1,14 +1,14 @@
 import Foundation
 
-enum ChargeControlMode: String, Codable, CaseIterable, Identifiable, Sendable {
+public enum ChargeControlMode: String, Codable, CaseIterable, Identifiable, Sendable {
   case automatic
   case manualWatts
   case passthroughHold
   case forceDischarge
 
-  var id: String { rawValue }
+  public var id: String { rawValue }
 
-  var title: String {
+  public var title: String {
     switch self {
     case .automatic: return "Otomatik (macOS)"
     case .manualWatts: return "Manuel Watt"
@@ -17,7 +17,7 @@ enum ChargeControlMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
   }
 
-  var shortTitle: String {
+  public var shortTitle: String {
     switch self {
     case .automatic: return "Oto"
     case .manualWatts: return "Manuel"
@@ -27,13 +27,13 @@ enum ChargeControlMode: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
-enum WattTargetScope: String, Codable, CaseIterable, Identifiable, Sendable {
+public enum WattTargetScope: String, Codable, CaseIterable, Identifiable, Sendable {
   case batteryNetWatts
   case adapterInputWatts
 
-  var id: String { rawValue }
+  public var id: String { rawValue }
 
-  var title: String {
+  public var title: String {
     switch self {
     case .batteryNetWatts: return "Net Pil Şarj Gücü"
     case .adapterInputWatts: return "Toplam Adaptör Çekiş Limiti"
@@ -41,15 +41,15 @@ enum WattTargetScope: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
-enum MagSafeLEDMode: String, Codable, CaseIterable, Identifiable, Sendable {
+public enum MagSafeLEDMode: String, Codable, CaseIterable, Identifiable, Sendable {
   case automatic
   case green
   case amber
   case off
 
-  var id: String { rawValue }
+  public var id: String { rawValue }
 
-  var title: String {
+  public var title: String {
     switch self {
     case .automatic: return "Otomatik"
     case .green: return "Yeşil"
@@ -58,7 +58,7 @@ enum MagSafeLEDMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
   }
 
-  var smcByte: UInt8 {
+  public var smcByte: UInt8 {
     switch self {
     case .automatic: return 0x00
     case .off: return 0x01
@@ -68,15 +68,15 @@ enum MagSafeLEDMode: String, Codable, CaseIterable, Identifiable, Sendable {
   }
 }
 
-enum PlugInDefaultBehavior: String, Codable, CaseIterable, Identifiable, Sendable {
+public enum PlugInDefaultBehavior: String, Codable, CaseIterable, Identifiable, Sendable {
   case keepLastMode
   case alwaysAutomatic
   case adapterSmartProfile
   case fixedCustomWatts
 
-  var id: String { rawValue }
+  public var id: String { rawValue }
 
-  var title: String {
+  public var title: String {
     switch self {
     case .keepLastMode: return "Son Seçili Modu Koru"
     case .alwaysAutomatic: return "Her Zaman macOS Otomatiğe Geç"
@@ -86,13 +86,13 @@ enum PlugInDefaultBehavior: String, Codable, CaseIterable, Identifiable, Sendabl
   }
 }
 
-struct ChargeCurveStage: Codable, Equatable, Identifiable, Sendable {
-  var stageIndex: Int
-  var upToPercent: Int
-  var watts: Int
-  var id: Int { stageIndex }
+public struct ChargeCurveStage: Codable, Equatable, Identifiable, Sendable {
+  public var stageIndex: Int
+  public var upToPercent: Int
+  public var watts: Int
+  public var id: Int { stageIndex }
 
-  init(stageIndex: Int = 0, upToPercent: Int, watts: Int) {
+  public init(stageIndex: Int = 0, upToPercent: Int, watts: Int) {
     self.stageIndex = stageIndex
     self.upToPercent = upToPercent
     self.watts = watts
@@ -104,7 +104,7 @@ struct ChargeCurveStage: Codable, Equatable, Identifiable, Sendable {
     case watts
   }
 
-  init(from decoder: Decoder) throws {
+  public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     let upToPercent = try container.decode(Int.self, forKey: .upToPercent)
     let watts = try container.decode(Int.self, forKey: .watts)
@@ -122,37 +122,85 @@ struct ChargeCurveStage: Codable, Equatable, Identifiable, Sendable {
   }
 }
 
-struct ChargeControlConfig: Codable, Equatable, Sendable {
-  var mode: ChargeControlMode
-  var targetWatts: Int
-  var targetScope: WattTargetScope
-  var maxChargeLimitPercent: Int
-  var hysteresisPercent: Int
-  var topUpTo100Active: Bool
-  var dischargeTargetPercent: Int
-  var thermalProtectionEnabled: Bool
-  var maxBatteryTempCelsius: Double
-  var thermalFallbackWatts: Int
-  var nightQuietModeEnabled: Bool
-  var nightStartHour: Int
-  var nightEndHour: Int
-  var nightWatts: Int
-  var nightTurnOffLED: Bool
-  var customCurveEnabled: Bool
-  var curveStages: [ChargeCurveStage]
-  var allowDutyCycleFallback: Bool
-  var plugInBehavior: PlugInDefaultBehavior
-  var plugInFixedWatts: Int
-  var ledMode: MagSafeLEDMode
-  var lowPowerModeEnabled: Bool
+public struct ChargeControlConfig: Codable, Equatable, Sendable {
+  public var mode: ChargeControlMode
+  public var targetWatts: Int
+  public var targetScope: WattTargetScope
+  public var maxChargeLimitPercent: Int
+  public var hysteresisPercent: Int
+  public var topUpTo100Active: Bool
+  public var dischargeTargetPercent: Int
+  public var thermalProtectionEnabled: Bool
+  public var maxBatteryTempCelsius: Double
+  public var thermalFallbackWatts: Int
+  public var nightQuietModeEnabled: Bool
+  public var nightStartHour: Int
+  public var nightEndHour: Int
+  public var nightWatts: Int
+  public var nightTurnOffLED: Bool
+  public var customCurveEnabled: Bool
+  public var curveStages: [ChargeCurveStage]
+  public var allowDutyCycleFallback: Bool
+  public var plugInBehavior: PlugInDefaultBehavior
+  public var plugInFixedWatts: Int
+  public var ledMode: MagSafeLEDMode
+  public var lowPowerModeEnabled: Bool
 
-  static let defaultCurve: [ChargeCurveStage] = [
+  public init(
+    mode: ChargeControlMode,
+    targetWatts: Int,
+    targetScope: WattTargetScope,
+    maxChargeLimitPercent: Int,
+    hysteresisPercent: Int,
+    topUpTo100Active: Bool,
+    dischargeTargetPercent: Int,
+    thermalProtectionEnabled: Bool,
+    maxBatteryTempCelsius: Double,
+    thermalFallbackWatts: Int,
+    nightQuietModeEnabled: Bool,
+    nightStartHour: Int,
+    nightEndHour: Int,
+    nightWatts: Int,
+    nightTurnOffLED: Bool,
+    customCurveEnabled: Bool,
+    curveStages: [ChargeCurveStage],
+    allowDutyCycleFallback: Bool,
+    plugInBehavior: PlugInDefaultBehavior,
+    plugInFixedWatts: Int,
+    ledMode: MagSafeLEDMode,
+    lowPowerModeEnabled: Bool
+  ) {
+    self.mode = mode
+    self.targetWatts = targetWatts
+    self.targetScope = targetScope
+    self.maxChargeLimitPercent = maxChargeLimitPercent
+    self.hysteresisPercent = hysteresisPercent
+    self.topUpTo100Active = topUpTo100Active
+    self.dischargeTargetPercent = dischargeTargetPercent
+    self.thermalProtectionEnabled = thermalProtectionEnabled
+    self.maxBatteryTempCelsius = maxBatteryTempCelsius
+    self.thermalFallbackWatts = thermalFallbackWatts
+    self.nightQuietModeEnabled = nightQuietModeEnabled
+    self.nightStartHour = nightStartHour
+    self.nightEndHour = nightEndHour
+    self.nightWatts = nightWatts
+    self.nightTurnOffLED = nightTurnOffLED
+    self.customCurveEnabled = customCurveEnabled
+    self.curveStages = curveStages
+    self.allowDutyCycleFallback = allowDutyCycleFallback
+    self.plugInBehavior = plugInBehavior
+    self.plugInFixedWatts = plugInFixedWatts
+    self.ledMode = ledMode
+    self.lowPowerModeEnabled = lowPowerModeEnabled
+  }
+
+  public static let defaultCurve: [ChargeCurveStage] = [
     ChargeCurveStage(stageIndex: 0, upToPercent: 50, watts: 30),
     ChargeCurveStage(stageIndex: 1, upToPercent: 80, watts: 12),
     ChargeCurveStage(stageIndex: 2, upToPercent: 100, watts: 5),
   ]
 
-  static let defaultConfig = ChargeControlConfig(
+  public static let defaultConfig = ChargeControlConfig(
     mode: .automatic,
     targetWatts: 15,
     targetScope: .batteryNetWatts,
@@ -177,7 +225,7 @@ struct ChargeControlConfig: Codable, Equatable, Sendable {
     lowPowerModeEnabled: false
   )
 
-  func clamped() -> ChargeControlConfig {
+  public func clamped() -> ChargeControlConfig {
     var copy = self
     copy.targetWatts = min(max(copy.targetWatts, 5), 140)
     copy.maxChargeLimitPercent = min(max(copy.maxChargeLimitPercent, 50), 100)
@@ -212,13 +260,13 @@ struct ChargeControlConfig: Codable, Equatable, Sendable {
   }
 }
 
-enum EffectivePowerCommand: Equatable, Sendable {
+public enum EffectivePowerCommand: Equatable, Sendable {
   case restoreAutomatic(reason: String)
   case limitWatts(watts: Int, scope: WattTargetScope, maxPercent: Int, hysteresis: Int, reason: String)
   case inhibitCharging(reason: String)
   case forceDischarge(untilPercent: Int, reason: String)
 
-  var summaryText: String {
+  public var summaryText: String {
     switch self {
     case .restoreAutomatic(let reason):
       return reason
@@ -233,18 +281,30 @@ enum EffectivePowerCommand: Equatable, Sendable {
   }
 }
 
-struct ChargePolicyEvaluation: Equatable, Sendable {
-  let command: EffectivePowerCommand
-  let effectiveLED: MagSafeLEDMode
-  let updatedConfig: ChargeControlConfig
-  let isInHysteresisHold: Bool
+public struct ChargePolicyEvaluation: Equatable, Sendable {
+  public let command: EffectivePowerCommand
+  public let effectiveLED: MagSafeLEDMode
+  public let updatedConfig: ChargeControlConfig
+  public let isInHysteresisHold: Bool
+
+  public init(
+    command: EffectivePowerCommand,
+    effectiveLED: MagSafeLEDMode,
+    updatedConfig: ChargeControlConfig,
+    isInHysteresisHold: Bool
+  ) {
+    self.command = command
+    self.effectiveLED = effectiveLED
+    self.updatedConfig = updatedConfig
+    self.isInHysteresisHold = isInHysteresisHold
+  }
 }
 
-enum ChargePolicyEvaluator {
-  static let emergencyThermalCelsius: Double = 43.0
-  static let minimumSafeDischargePercent: Double = 15.0
+public enum ChargePolicyEvaluator {
+  public static let emergencyThermalCelsius: Double = 43.0
+  public static let minimumSafeDischargePercent: Double = 15.0
 
-  static func isWithinHourWindow(hour: Int, startHour: Int, endHour: Int) -> Bool {
+  public static func isWithinHourWindow(hour: Int, startHour: Int, endHour: Int) -> Bool {
     if startHour == endHour { return false }
     if startHour < endHour {
       return hour >= startHour && hour < endHour
@@ -252,7 +312,7 @@ enum ChargePolicyEvaluator {
     return hour >= startHour || hour < endHour
   }
 
-  static func curveWatts(forPercent percent: Double, stages: [ChargeCurveStage], fallback: Int) -> Int {
+  public static func curveWatts(forPercent percent: Double, stages: [ChargeCurveStage], fallback: Int) -> Int {
     let sorted = stages.sorted { $0.upToPercent < $1.upToPercent }
     for stage in sorted where percent <= Double(stage.upToPercent) {
       return min(max(stage.watts, 5), 140)
@@ -260,7 +320,7 @@ enum ChargePolicyEvaluator {
     return sorted.last.map { min(max($0.watts, 5), 140) } ?? fallback
   }
 
-  static func configForPlugIn(
+  public static func configForPlugIn(
     current: ChargeControlConfig,
     adapterRatingWatts: Int
   ) -> ChargeControlConfig {
@@ -283,7 +343,7 @@ enum ChargePolicyEvaluator {
     }
   }
 
-  static func evaluate(
+  public static func evaluate(
     config rawConfig: ChargeControlConfig,
     telemetry: LivePowerTelemetry,
     now: Date = Date(),
