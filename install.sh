@@ -2,32 +2,40 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TMP_ZIP=""
+TMP_DIR="$(mktemp -d /tmp/WattWhat.XXXXXX)"
 cleanup() {
-    if [ -n "$TMP_ZIP" ]; then
-        rm -f "$TMP_ZIP"
-    fi
+    rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
+STAGE_DIR="$TMP_DIR/stage"
+TMP_ZIP="$TMP_DIR/WattWhat.zip"
+mkdir -p "$STAGE_DIR"
+
 echo "WattWhat Kurulumu Başlıyor..."
 
-pkill -x WattWhat >/dev/null 2>&1 || true
-
 if [ -d "$SCRIPT_DIR/WattWhat.app" ]; then
-    echo "Yerel WattWhat.app paketi kuruluyor..."
-    rm -rf /Applications/WattWhat.app
-    cp -R "$SCRIPT_DIR/WattWhat.app" /Applications/WattWhat.app
+    echo "Yerel WattWhat.app paketi doğrulanıyor..."
+    cp -R "$SCRIPT_DIR/WattWhat.app" "$STAGE_DIR/WattWhat.app"
 elif [ -f "$SCRIPT_DIR/WattWhat.zip" ]; then
-    echo "Yerel WattWhat.zip paketi kuruluyor..."
-    unzip -oq "$SCRIPT_DIR/WattWhat.zip" -d /Applications
+    echo "Yerel WattWhat.zip paketi doğrulanıyor..."
+    unzip -oq "$SCRIPT_DIR/WattWhat.zip" -d "$STAGE_DIR"
 else
     echo "En güncel WattWhat paketi indiriliyor..."
-    TMP_ZIP="$(mktemp /tmp/WattWhat.XXXXXX.zip)"
     curl -fsSL https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o "$TMP_ZIP"
-    unzip -oq "$TMP_ZIP" -d /Applications
+    unzip -oq "$TMP_ZIP" -d "$STAGE_DIR"
 fi
 
+if [ ! -f "$STAGE_DIR/WattWhat.app/Contents/Info.plist" ]; then
+    echo "❌ Pakette WattWhat.app/Contents/Info.plist bulunamadı." >&2
+    exit 1
+fi
+
+codesign --verify --deep --strict "$STAGE_DIR/WattWhat.app"
+
+pkill -x WattWhat >/dev/null 2>&1 || true
+rm -rf /Applications/WattWhat.app
+mv "$STAGE_DIR/WattWhat.app" /Applications/WattWhat.app
 xattr -cr /Applications/WattWhat.app
 
 if [ -e /Library/PrivilegedHelperTools/com.kuarezma.wattwhat.helper ]; then
