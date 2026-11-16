@@ -39,7 +39,7 @@ if FileManager.default.fileExists(atPath: "Assets/AppIcon.icns") {
 
 // 6. Write Info.plist — without a bundle identifier UNUserNotificationCenter
 //     throws at launch; LSUIElement keeps it a menu-bar-only agent (no Dock icon).
-let appVersion = "2.0.0"
+let appVersion = "2.1.0"
 let infoPlist = """
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -97,12 +97,20 @@ run("rm -rf DMGStaging")
 print("📜 Creating Install Script...")
 let installScript = """
 #!/bin/bash
+set -euo pipefail
+
+TMP_ZIP="$(mktemp /tmp/WattWhat.XXXXXX.zip)"
+trap 'rm -f "$TMP_ZIP"' EXIT
+
 echo "WattWhat Kurulumu Başlıyor..."
 echo "Lütfen bekleyin..."
-curl -sL https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o /tmp/WattWhat.zip
-unzip -oq /tmp/WattWhat.zip -d /Applications
+curl -fsSL https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o "$TMP_ZIP"
+pkill -x WattWhat >/dev/null 2>&1 || true
+unzip -oq "$TMP_ZIP" -d /Applications
 xattr -cr /Applications/WattWhat.app
-rm /tmp/WattWhat.zip
+if [ -e /Library/PrivilegedHelperTools/com.kuarezma.wattwhat.helper ]; then
+    echo "ℹ️ Mevcut yardımcı servis tespit edildi. WattWhat içinden veya 'wattctl install' ile yardımcı servisi v\(appVersion) sürümüne güncelleyebilirsiniz."
+fi
 open /Applications/WattWhat.app
 echo "Kurulum başarıyla tamamlandı! Bu pencereyi kapatabilirsiniz."
 """
