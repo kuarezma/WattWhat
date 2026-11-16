@@ -1,0 +1,40 @@
+name: macOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Run SwiftPM unit tests
+        run: swift test
+
+      - name: Typecheck targets with Swift 6
+        run: |
+          swiftc -typecheck -swift-version 6 WattWhat.swift Sources/WattWhatCore/*.swift Sources/WattWhatUI/*.swift
+          swiftc -typecheck -swift-version 6 Sources/WattWhatCore/*.swift Sources/WattWhatHelper/main.swift
+          swiftc -typecheck -swift-version 6 Sources/WattWhatCore/*.swift Sources/WattWhatCLI/main.swift
+
+      - name: Lint Info.plist and shell scripts
+        run: |
+          plutil -lint Assets/Info.plist
+          bash -n install.sh Yukle_WattWhat.command
+
+      - name: Build app bundle and verify codesign
+        run: |
+          ./build.swift
+          test -x WattWhat.app/Contents/MacOS/WattWhat
+          test -x WattWhat.app/Contents/MacOS/wattwhat-helper
+          test -x WattWhat.app/Contents/MacOS/wattctl
+          codesign --verify --deep --strict WattWhat.app
