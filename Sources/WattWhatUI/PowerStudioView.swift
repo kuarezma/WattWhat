@@ -16,6 +16,8 @@ final class PowerStudioModel: ObservableObject {
   @Published var telemetry: LivePowerTelemetry = .empty
   @Published var isHelperInstalled: Bool = false
   @Published var isHelperRunning: Bool = false
+  @Published var isHelperOutdated: Bool = false
+  @Published var isSystemLowPowerMode: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
   @Published var activeRegulationMethod: RegulationMethod = .helperOffline
   @Published var effectiveReason: String = "Durum kontrol ediliyor…"
   @Published var appliedTargetWatts: Int?
@@ -55,32 +57,48 @@ struct PowerStudioView: View {
     .onAppear {
       customWattInput = "\(model.config.targetWatts)"
     }
-    .onChange(of: model.config.targetWatts) { newVal in
-      customWattInput = "\(newVal)"
+    .onReceive(model.$config) { newConfig in
+      let newStr = "\(newConfig.targetWatts)"
+      if customWattInput != newStr {
+        customWattInput = newStr
+      }
     }
   }
 
   // MARK: - 1. Yetkili Servis Durum Bandı
 
   private var helperBanner: some View {
-    HStack(spacing: 12) {
-      Image(systemName: model.isHelperRunning ? "bolt.shield.fill" : "exclamationmark.shield.fill")
+    let isHealthy = model.isHelperRunning && !model.isHelperOutdated
+    let statusColor: Color = isHealthy ? .green : .orange
+    let iconName = isHealthy ? "bolt.shield.fill" : "exclamationmark.shield.fill"
+    let bannerTitle: String = {
+      if model.isHelperOutdated {
+        return "Yetkili Güç Motoru Güncellemesi Gerekli (v\(HelperConstants.protocolVersion))"
+      } else if !model.isHelperRunning {
+        return "Yetkili Güç Motoru Gerekli"
+      } else {
+        return "Yetkili Güç Motoru Aktif"
+      }
+    }()
+
+    return HStack(spacing: 12) {
+      Image(systemName: iconName)
         .font(.title2)
-        .foregroundStyle(model.isHelperRunning ? .green : .orange)
+        .foregroundStyle(statusColor)
 
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 8) {
-          Text(model.isHelperRunning ? "Yetkili Güç Motoru Aktif" : "Yetkili Güç Motoru Gerekli")
+          Text(bannerTitle)
             .font(.headline)
           Text(model.activeRegulationMethod.rawValue)
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 8)
             .padding(.vertical, 2)
             .background(
-              (model.isHelperRunning ? Color.green : Color.orange).opacity(0.16),
+              statusColor.opacity(0.16),
               in: Capsule()
             )
-            .foregroundStyle(model.isHelperRunning ? .green : .orange)
+            .foregroundStyle(statusColor)
         }
         Text(model.statusFeedbackMessage ?? model.effectiveReason)
           .font(.caption)
@@ -96,7 +114,15 @@ struct PowerStudioView: View {
         Label("Yenile", systemImage: "arrow.clockwise")
       }
 
-      if !model.isHelperRunning {
+      if model.isHelperOutdated {
+        Button {
+          model.actions.installHelper()
+        } label: {
+          Label("Güç Motorunu Güncelle ⚡️", systemImage: "arrow.triangle.2.circlepath.circle.fill")
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.orange)
+      } else if !model.isHelperRunning {
         Button {
           model.actions.installHelper()
         } label: {
@@ -588,19 +614,55 @@ struct PowerStudioView: View {
 
       if model.config.customCurveEnabled {
         HStack(spacing: 12) {
-          ForEach(Array(model.config.curveStages.enumerated()), id: \.offset) { idx, stage in
-            let prevBound = idx == 0 ? 0 : model.config.curveStages[idx - 1].upToPercent
-            VStack(alignment: .leading, spacing: 4) {
-              Text("%\(prevBound) – %\(stage.upToPercent) Arası")
+          ForEach(model.config.curveStages) { stage in
+            let prevBound: Int = {
+              guard let idx = model.config.curveStages.firstIndex(where: { $0.stageIndex == stage.stageIndex }),
+                idx > 0
+              else { return 0 }
+              return model.config.curveStages[idx - 1].upToPercent
+            }()
+            let upperBound = stage.stageIndex == 2 ? 100 : stage.upToPercent
+            VStack(alignment: .leading, spacing: 6) {
+              Text("%\(prevBound) – %\(upperBound) Arası")
                 .font(.caption.bold())
+              if stage.stageIndex == 0 || stage.stageIndex == 1 {
+                Stepper(
+                  "Tavan: %\(stage.upToPercent)",
+                  value: Binding(
+                    get: {
+                      model.config.curveStages.first(where: { $0.stageIndex == stage.stageIndex })?.upToPercent
+                        ?? stage.upToPercent
+                    },
+                    set: { newPercent in
+                      var updated = model.config
+                      if let idx = updated.curveStages.firstIndex(where: { $0.stageIndex == stage.stageIndex }) {
+                        updated.curveStages[idx].upToPercent = newPercent
+                        apply(updated.clamped())
+                      }
+                    }
+                  ),
+                  in: stage.stageIndex == 0 ? 15...75 : 25...95,
+                  step: 5
+                )
+                .font(.caption.monospacedDigit())
+              } else {
+                Text("Tavan: %100 (Sabit)")
+                  .font(.caption.monospacedDigit())
+                  .foregroundStyle(.secondary)
+              }
               Stepper(
                 "\(stage.watts) W",
                 value: Binding(
-                  get: { model.config.curveStages[idx].watts },
+                  get: {
+                    model.config.curveStages.first(where: { $0.stageIndex == stage.stageIndex })?.watts
+                      ?? stage.watts
+                  },
                   set: { newWatts in
                     var updated = model.config
-                    updated.curveStages[idx].watts = newWatts
-                    apply(updated)
+                    if let idx = updated.curveStages.firstIndex(where: { $0.stageIndex == stage.stageIndex }) {
+                      updated.curveStages[idx].watts = newWatts
+                      apply(updated.clamped())
+                    }
                   }
                 ),
                 in: 5...140,
@@ -639,7 +701,7 @@ struct PowerStudioView: View {
               apply(updated)
             }
           ),
-          in: 30...42,
+          in: 30...45,
           step: 1
         )
         .font(.caption)
@@ -653,7 +715,7 @@ struct PowerStudioView: View {
               apply(updated)
             }
           ),
-          in: 5...25,
+          in: 5...30,
           step: 1
         )
         .font(.caption)
@@ -708,7 +770,7 @@ struct PowerStudioView: View {
               apply(updated)
             }
           ),
-          in: 5...25
+          in: 5...30
         )
         .font(.caption)
         Toggle(
@@ -757,10 +819,8 @@ struct PowerStudioView: View {
         Toggle(
           "Düşük Güç Modu",
           isOn: Binding(
-            get: { ProcessInfo.processInfo.isLowPowerModeEnabled },
-            set: { newVal in
-              model.actions.setLowPowerMode(newVal)
-            }
+            get: { model.isSystemLowPowerMode },
+            set: { model.actions.setLowPowerMode($0) }
           )
         )
       }

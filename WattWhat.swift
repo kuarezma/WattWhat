@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    let appVersion = "2.0.0"
+    let appVersion = "2.1.0"
     var statusItem: NSStatusItem!
     var timer: Timer?
     var updateTimer: Timer?
@@ -94,6 +94,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var totalWatts: Double = 0.0
     var wattSamplesCount: Int = 0
     var wasCharging: Bool = false
+    var hasInitializedBatteryState = false
     var hasNotifiedFullCharge = false
     var hasNotifiedLowBattery = false
     var hasNotifiedEightyPercent = false
@@ -101,6 +102,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var cachedSystemProfilerBatteryHealth: Double?
 
     var lastWatts: Double = 0.0
+    var lastNetBatteryWatts: Double = 0.0
+    var configMutationRevision: UInt64 = 0
+    var isRefreshingPowerControl = false
     var lastPercentage: Double = 0.0
     var lastTimeString: String = "(...)"
     var lastIsCharging: Bool = false
@@ -255,6 +259,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(screenDidSleep), name: NSWorkspace.screensDidSleepNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(screenDidWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(systemPowerStateDidChange), name: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil)
         lastUpdateDate = Date()
         
         updateAppearanceMenuState()
@@ -328,7 +333,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     
     func performSilentUpdate() {
-        let script = "nohup bash -c 'sleep 2 && curl -sL https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o /tmp/WattWhat.zip && unzip -oq /tmp/WattWhat.zip -d /Applications && rm /tmp/WattWhat.zip && open /Applications/WattWhat.app' > /dev/null 2>&1 &"
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let script = "nohup bash -c 'if curl -fsSL https://github.com/kuarezma/WattWhat/releases/latest/download/WattWhat.zip -o /tmp/WattWhat.zip && unzip -oq /tmp/WattWhat.zip -d /Applications && xattr -cr /Applications/WattWhat.app && rm -f /tmp/WattWhat.zip; then kill -TERM \(pid) >/dev/null 2>&1 || true; i=0; while kill -0 \(pid) >/dev/null 2>&1 && [ $i -lt 25 ]; do sleep 0.2; i=$((i+1)); done; open /Applications/WattWhat.app; else rm -f /tmp/WattWhat.zip; fi' > /dev/null 2>&1 &"
         let task = Process()
         task.launchPath = "/bin/bash"
         task.arguments = ["-c", script]
@@ -337,7 +343,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             print("Failed to run update script")
         }
-        NSApplication.shared.terminate(nil)
     }
     
     @objc func checkForUpdatesAndHealth() {
@@ -382,6 +387,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isScreenOn = true
         lastUpdateDate = Date()
         resetProcessEnergyMeasurement()
+    }
+
+    @objc func systemPowerStateDidChange(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.powerStudioModel.isSystemLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
     }
     
     func formatTimeInterval(_ interval: TimeInterval) -> String {
@@ -541,11 +552,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 wattString = String(format: "%.1fW", lastWatts)
             case .manualWatts:
                 let target = lastHelperResponse?.appliedTargetWatts ?? chargeControlConfig.targetWatts
-                wattString = String(format: "%.1fW/%dW", lastWatts, target)
+                let displayed = (chargeControlConfig.targetScope == .batteryNetWatts) ? lastNetBatteryWatts : lastWatts
+                wattString = String(format: "%.1fW/%dW", displayed, target)
             case .passthroughHold:
-                wattString = String(format: "%.1fW/0W", lastWatts)
+                wattString = String(format: "%.1fW/0W", lastNetBatteryWatts)
             case .forceDischarge:
-                wattString = String(format: "%.1fW(↓%%%d)", lastWatts, chargeControlConfig.dischargeTargetPercent)
+                wattString = String(format: "%.1fW(↓%%%d)", lastNetBatteryWatts, chargeControlConfig.dischargeTargetPercent)
             }
         } else {
             wattString = String(format: "%.1fW", lastWatts)
@@ -563,7 +575,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let title = titleComponents.joined(separator: " ")
         let colorState: Int
-        if lastPluggedIn && chargeControlConfig.mode == .manualWatts {
+        if lastPluggedIn && chargeControlConfig.mode == .manualWatts
+            && (lastHelperResponse?.activeRegulationMethod.isActivelyRegulating == true)
+        {
             colorState = 3 // Manuel Watt Limiti aktif
         } else if lastIsCharging {
             colorState = 2 // Aktif şarj
@@ -614,6 +628,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastUpdateDate = now
         
         var watts: Double = 0.0
+        var netBattWatts: Double = 0.0
         var isPluggedInSmart = false
         var isChargingSmart = false
         let shouldReadThermal = isMenuOpen || now.timeIntervalSince(lastThermalSampleDate) >= 30.0
@@ -630,7 +645,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let voltage = Self.signedInt64Value(voltageRaw),
                let amperage = Self.signedInt64Value(amperageRaw),
                voltage > 0 {
-                watts = abs(Double(voltage) * Double(amperage)) / 1_000_000.0
+                netBattWatts = amperage == 0 ? 0.0 : abs(Double(voltage) * Double(amperage)) / 1_000_000.0
+                watts = netBattWatts
             }
 
             if let extConn = IORegistryEntryCreateCFProperty(service, "ExternalConnected" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool {
@@ -738,7 +754,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         
-        if isPluggedIn != wasCharging {
+        if !hasInitializedBatteryState {
+            wasCharging = isPluggedIn
+        } else if isPluggedIn != wasCharging {
             let prevPlugged = wasCharging
             if !isPluggedIn {
                 screenOnTime = 0
@@ -784,6 +802,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         lastWatts = watts
+        lastNetBatteryWatts = netBattWatts
         lastPercentage = percentage
         lastTimeString = timeString
         lastIsCharging = isCharging
@@ -797,14 +816,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateTopAppsBackground()
         refreshPowerControlStateBackground(forceProbe: false)
 
-        if isPluggedIn {
+        if !hasInitializedBatteryState {
+            if isPluggedIn {
+                if isFullyCharged {
+                    hasNotifiedFullCharge = true
+                }
+                let limitThreshold = chargeControlConfig.maxChargeLimitPercent < 100
+                    ? Double(chargeControlConfig.maxChargeLimitPercent)
+                    : 80.0
+                if percentage >= limitThreshold {
+                    hasNotifiedEightyPercent = true
+                }
+            }
+            hasInitializedBatteryState = true
+        } else if isPluggedIn {
             hasNotifiedLowBattery = false
             if isFullyCharged && !hasNotifiedFullCharge {
                 sendNotification(title: "Pil Tamamen Doldu ⚡️", body: "Pil %100 oldu, bilgisayarınızı şarjdan çekebilirsiniz.")
                 hasNotifiedFullCharge = true
             }
-            if percentage >= 80.0 && !hasNotifiedEightyPercent {
-                sendNotification(title: "Pil %80 Seviyesine Ulaştı 🔋", body: "Pil sağlığını korumak için şarj cihazını çıkarabilirsiniz.")
+            let rawLimit = Double(chargeControlConfig.maxChargeLimitPercent)
+            let ceiling = rawLimit < 100 ? rawLimit : 80.0
+            if percentage >= ceiling && !hasNotifiedEightyPercent {
+                if chargeControlConfig.mode != .automatic {
+                    sendNotification(
+                        title: "Pil %\(Int(ceiling)) Seviyesine Ulaştı 🔋",
+                        body: "Pil %\(Int(ceiling)) koruma tavanına ulaştı; WattWhat güç akışını yönetiyor."
+                    )
+                } else {
+                    sendNotification(title: "Pil %80 Seviyesine Ulaştı 🔋", body: "Pil sağlığını korumak için şarj cihazını çıkarabilirsiniz.")
+                }
                 hasNotifiedEightyPercent = true
             }
         } else {

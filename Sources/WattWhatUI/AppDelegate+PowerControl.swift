@@ -75,6 +75,7 @@ extension AppDelegate {
       (30, "🚀 30 W — Hızlı Şarj"),
       (45, "🔥 45 W — Yüksek Güç"),
       (67, "⚡️ 67 W — Maksimum Hızlı"),
+      (96, "⚡️ 96 W — Maksimum Pro Şarj"),
     ]
     for (watt, label) in presets {
       let item = NSMenuItem(
@@ -300,6 +301,8 @@ extension AppDelegate {
   }
 
   func applyChargeConfig(_ config: ChargeControlConfig) {
+    configMutationRevision &+= 1
+    let requestRev = configMutationRevision
     let clamped = config.clamped()
     chargeControlConfig = clamped
     LocalConfigStore.save(clamped)
@@ -313,6 +316,7 @@ extension AppDelegate {
       let fallbackTelemetry = PowerTelemetryReader.read()
       DispatchQueue.main.async {
         guard let self else { return }
+        guard self.configMutationRevision == requestRev else { return }
         self.powerStudioModel.isApplying = false
         switch result {
         case .success(let response):
@@ -334,12 +338,15 @@ extension AppDelegate {
   }
 
   func setChargeModeAutomatic() {
+    configMutationRevision &+= 1
+    let requestRev = configMutationRevision
     var updated = chargeControlConfig
     updated.mode = .automatic
     updated.topUpTo100Active = false
     chargeControlConfig = updated
     LocalConfigStore.save(updated)
     powerStudioModel.config = updated
+    powerStudioModel.isApplying = false
     updatePowerControlMenuState()
     refreshStatusBarTitle()
 
@@ -348,6 +355,7 @@ extension AppDelegate {
       let fallbackTelemetry = PowerTelemetryReader.read()
       DispatchQueue.main.async {
         guard let self else { return }
+        guard self.configMutationRevision == requestRev else { return }
         switch result {
         case .success(let response):
           self.syncPowerControlUI(with: response)
@@ -370,15 +378,23 @@ extension AppDelegate {
     chargeControlConfig = updated
     LocalConfigStore.save(updated)
     powerStudioModel.config = updated
+    powerStudioModel.isSystemLowPowerMode = enabled
 
     helperIPCQueue.async { [weak self] in
       let result = HelperIPCClient.send(
         HelperRequest(command: .setLowPowerMode, lowPowerMode: enabled))
       DispatchQueue.main.async {
         guard let self else { return }
-        if case .success(let response) = result {
+        switch result {
+        case .success(let response):
           self.syncPowerControlUI(with: response)
-        } else {
+          if !response.ok {
+            self.powerStudioModel.isSystemLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            self.powerStudioModel.statusFeedbackMessage =
+              response.errorMessage ?? "Düşük Güç Modu değişimi uygulanamadı."
+          }
+        case .failure:
+          self.powerStudioModel.isSystemLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
           self.powerStudioModel.statusFeedbackMessage =
             "Düşük Güç Modu değişimi için Yetkili Güç Motoru aktif olmalıdır."
         }
@@ -444,18 +460,24 @@ extension AppDelegate {
   }
 
   func refreshPowerControlStateBackground(forceProbe: Bool = false) {
+    if !forceProbe && isRefreshingPowerControl {
+      return
+    }
     let isStudioVisible = energyDashboardWindowController?.window?.isVisible == true
     guard forceProbe || isMenuOpen || isStudioVisible || HelperIPCClient.isSocketReachable else {
       let telemetry = PowerTelemetryReader.read()
       powerStudioModel.telemetry = telemetry
       powerStudioModel.isHelperInstalled = HelperIPCClient.isHelperInstalled
       powerStudioModel.isHelperRunning = false
+      powerStudioModel.isHelperOutdated = false
       powerStudioModel.activeRegulationMethod = .helperOffline
       updatePowerSummaryMenu(telemetry: telemetry)
       updatePowerControlMenuState()
       return
     }
 
+    isRefreshingPowerControl = true
+    let capturedRev = configMutationRevision
     helperIPCQueue.async { [weak self] in
       let cmd: HelperCommand = (forceProbe || isStudioVisible) ? .probeHardware : .status
       let result = HelperIPCClient.send(HelperRequest(command: cmd), timeoutSeconds: 1.5)
@@ -464,6 +486,18 @@ extension AppDelegate {
         (forceProbe || isStudioVisible) ? AppleSMCClient.probeReadableChargerKeys() : []
       DispatchQueue.main.async {
         guard let self else { return }
+        self.isRefreshingPowerControl = false
+        guard self.configMutationRevision == capturedRev else {
+          let telemetry: LivePowerTelemetry
+          if case .success(let response) = result {
+            telemetry = response.telemetry
+          } else {
+            telemetry = fallbackTelemetry
+          }
+          self.powerStudioModel.telemetry = telemetry
+          self.updatePowerSummaryMenu(telemetry: telemetry)
+          return
+        }
         switch result {
         case .success(let response):
           self.syncPowerControlUI(with: response)
@@ -489,6 +523,7 @@ extension AppDelegate {
     powerStudioModel.telemetry = response.telemetry
     powerStudioModel.isHelperInstalled = HelperIPCClient.isHelperInstalled
     powerStudioModel.isHelperRunning = response.isHelperRunning
+    powerStudioModel.isHelperOutdated = response.isHelperOutdated
     powerStudioModel.activeRegulationMethod = response.activeRegulationMethod
     powerStudioModel.effectiveReason = response.effectiveReason
     powerStudioModel.appliedTargetWatts = response.appliedTargetWatts
@@ -535,8 +570,17 @@ extension AppDelegate {
 
   func updatePowerControlMenuState() {
     let running = lastHelperResponse?.isHelperRunning ?? false
-    powerHelperActionItem?.isHidden = running
-    powerHelperActionItem?.title = "⚡️ Yetkili Güç Motorunu Etkinleştir…"
+    let outdated = lastHelperResponse?.isHelperOutdated ?? false
+    if !running {
+      powerHelperActionItem?.isHidden = false
+      powerHelperActionItem?.title = "⚡️ Yetkili Güç Motorunu Etkinleştir…"
+    } else if outdated {
+      powerHelperActionItem?.isHidden = false
+      powerHelperActionItem?.title =
+        "⚠️ Güç Motorunu Güncelle (v\(lastHelperResponse?.helperVersion ?? "?") → v\(HelperConstants.protocolVersion))…"
+    } else {
+      powerHelperActionItem?.isHidden = true
+    }
 
     switch chargeControlConfig.mode {
     case .automatic:
@@ -560,7 +604,7 @@ extension AppDelegate {
       case -99:
         let isCustomPreset =
           chargeControlConfig.mode == .manualWatts
-          && ![5, 10, 15, 20, 30, 45, 67].contains(chargeControlConfig.targetWatts)
+          && ![5, 10, 15, 20, 30, 45, 67, 96].contains(chargeControlConfig.targetWatts)
         item.state = isCustomPreset ? .on : .off
       default:
         item.state =
