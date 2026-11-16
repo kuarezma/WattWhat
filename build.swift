@@ -95,6 +95,11 @@ fi
 codesign --verify --deep --strict "$STAGE_DIR/WattWhat.app"
 
 pkill -x WattWhat >/dev/null 2>&1 || true
+for _ in $(seq 1 25); do
+    pgrep -x WattWhat >/dev/null 2>&1 || break
+    sleep 0.2
+done
+sleep 0.3
 rm -rf /Applications/WattWhat.app
 mv "$STAGE_DIR/WattWhat.app" /Applications/WattWhat.app
 xattr -cr /Applications/WattWhat.app
